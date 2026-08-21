@@ -1,0 +1,26 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal app
+        env:
+          PUBLISH_DIR: ${{ github.workspace }}/dist
+        run: bash build-macos.sh
+
+      - name: Upload universal app
+        uses: actions/upload-artifact@v4
+        with:
+          name: YilaiCodexSwitcher-macOS-universal
+          path: dist/YilaiCodexSwitcher-macOS-universal.zip
+          if-no-files-found: error
