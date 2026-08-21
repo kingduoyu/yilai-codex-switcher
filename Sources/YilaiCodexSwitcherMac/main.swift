@@ -330,9 +330,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+private func renderScreenshot(to destination: URL) throws {
+  let view = NSHostingView(rootView: ContentView())
+  view.frame = NSRect(x: 0, y: 0, width: 960, height: 650)
+  let window = NSWindow(
+    contentRect: view.frame,
+    styleMask: [.borderless],
+    backing: .buffered,
+    defer: false
+  )
+  window.contentView = view
+  window.isOpaque = false
+  window.backgroundColor = .clear
+  view.layoutSubtreeIfNeeded()
+  guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+    throw SwitcherError.message("无法创建界面截图缓冲区")
+  }
+  view.cacheDisplay(in: view.bounds, to: bitmap)
+  guard let data = bitmap.representation(using: .png, properties: [:]) else {
+    throw SwitcherError.message("无法编码界面截图")
+  }
+  try data.write(to: destination, options: .atomic)
+  _ = window
+}
+
 if CommandLine.arguments.contains("--self-test") {
   do {
     try runSelfTest()
+    exit(0)
+  } catch {
+    fputs("\(error.localizedDescription)\n", stderr)
+    exit(1)
+  }
+}
+
+if let screenshotIndex = CommandLine.arguments.firstIndex(of: "--screenshot"),
+  CommandLine.arguments.indices.contains(screenshotIndex + 1)
+{
+  do {
+    _ = NSApplication.shared
+    try renderScreenshot(
+      to: URL(fileURLWithPath: CommandLine.arguments[screenshotIndex + 1]))
     exit(0)
   } catch {
     fputs("\(error.localizedDescription)\n", stderr)

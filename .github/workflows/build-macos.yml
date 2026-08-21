@@ -18,9 +18,16 @@ jobs:
           PUBLISH_DIR: ${{ github.workspace }}/dist
         run: bash build-macos.sh
 
+      - name: Render macOS UI proof
+        run: >-
+          "dist/易来 Codex 切换器.app/Contents/MacOS/YilaiCodexSwitcherMac"
+          --screenshot "dist/implementation-macos.png"
+
       - name: Upload universal app
         uses: actions/upload-artifact@v4
         with:
           name: YilaiCodexSwitcher-macOS-universal
-          path: dist/YilaiCodexSwitcher-macOS-universal.zip
+          path: |
+            dist/YilaiCodexSwitcher-macOS-universal.zip
+            dist/implementation-macos.png
           if-no-files-found: error
