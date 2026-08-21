@@ -2,6 +2,12 @@
 
 macOS 13+ 原生 SwiftUI/AppKit 版本，支持 Intel 与 Apple Silicon。
 
+## 下载
+
+从 [Releases](https://github.com/kingduoyu/yilai-codex-switcher-macos/releases/latest) 下载 `YilaiCodexSwitcher-macOS-universal.zip`，解压后打开 `易来 Codex 切换器.app`。
+
+当前版本使用 ad-hoc 签名，没有 Apple Developer ID 公证。首次打开若被 Gatekeeper 拦截，请右键应用并选择“打开”。
+
 ## 构建
 
 在安装了 Xcode Command Line Tools 的 Mac 上运行：
