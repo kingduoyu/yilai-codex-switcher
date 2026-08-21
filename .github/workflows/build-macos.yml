@@ -28,6 +28,7 @@ jobs:
         with:
           name: YilaiCodexSwitcher-macOS-universal
           path: |
+            dist/YilaiCodexSwitcher-macOS-universal.dmg
             dist/YilaiCodexSwitcher-macOS-universal.zip
             dist/implementation-macos.png
           if-no-files-found: error

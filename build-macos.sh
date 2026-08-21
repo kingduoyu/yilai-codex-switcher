@@ -35,6 +35,20 @@ chmod +x "$APP/Contents/MacOS/YilaiCodexSwitcherMac"
 codesign --force --deep --sign - "$APP"
 "$APP/Contents/MacOS/YilaiCodexSwitcherMac" --self-test
 
+DMG_STAGE="$ROOT/.dmg-stage"
+DMG="$PUBLISH/YilaiCodexSwitcher-macOS-universal.dmg"
+rm -rf "$DMG_STAGE"
+mkdir -p "$DMG_STAGE/.background"
+cp -R "$APP" "$DMG_STAGE/"
+ln -s /Applications "$DMG_STAGE/Applications"
+sips -z 440 704 "$ROOT/Resources/liquid-glass-background.png" \
+  --out "$DMG_STAGE/.background/background.png" >/dev/null
+hdiutil create -volname "易来 Codex 切换器" -srcfolder "$DMG_STAGE" \
+  -ov -format UDZO "$DMG"
+hdiutil verify "$DMG"
+rm -rf "$DMG_STAGE"
+
 rm -f "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
 shasum -a 256 "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
+shasum -a 256 "$DMG"
