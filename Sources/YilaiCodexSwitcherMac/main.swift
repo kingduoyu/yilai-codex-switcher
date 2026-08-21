@@ -4,6 +4,34 @@ import SwiftUI
 
 private let productName = "易来 Codex 切换器"
 
+private struct MacWindowControls: View {
+  var body: some View {
+    HStack(spacing: 8) {
+      Button {
+        NSApp.keyWindow?.close()
+      } label: {
+        control(color: Color(red: 1.0, green: 0.38, blue: 0.34), symbol: "xmark")
+      }
+      Button {
+        NSApp.keyWindow?.miniaturize(nil)
+      } label: {
+        control(color: Color(red: 1.0, green: 0.74, blue: 0.24), symbol: "minus")
+      }
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func control(color: Color, symbol: String) -> some View {
+    ZStack {
+      Circle().fill(color).frame(width: 13, height: 13)
+      Image(systemName: symbol)
+        .font(.system(size: 7, weight: .bold))
+        .foregroundStyle(.black.opacity(0.55))
+    }
+    .frame(width: 18, height: 32)
+  }
+}
+
 final class SwitcherModel: ObservableObject {
   @Published var key = ""
   @Published var showKey = false
@@ -86,12 +114,7 @@ struct ContentView: View {
 
   private var titleBar: some View {
     HStack(spacing: 15) {
-      macWindowButton(color: Color(red: 1.0, green: 0.38, blue: 0.34), symbol: "xmark") {
-        NSApp.keyWindow?.close()
-      }
-      macWindowButton(color: Color(red: 1.0, green: 0.74, blue: 0.24), symbol: "minus") {
-        NSApp.keyWindow?.miniaturize(nil)
-      }
+      MacWindowControls()
 
       if let logo = resourceImage("yilai-switcher-logo") {
         Image(nsImage: logo).resizable().scaledToFit().frame(width: 32, height: 32)
@@ -271,19 +294,6 @@ struct ContentView: View {
     .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.95)).frame(height: 1) }
   }
 
-  private func macWindowButton(color: Color, symbol: String, action: @escaping () -> Void)
-    -> some View
-  {
-    Button(action: action) {
-      ZStack {
-        Circle().fill(color).frame(width: 13, height: 13)
-        Image(systemName: symbol).font(.system(size: 7, weight: .bold)).foregroundStyle(
-          .black.opacity(0.55))
-      }
-      .frame(width: 18, height: 32)
-    }
-    .buttonStyle(.plain)
-  }
 }
 
 private func resourceImage(_ name: String) -> NSImage? {
