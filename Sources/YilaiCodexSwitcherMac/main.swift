@@ -124,8 +124,8 @@ struct ContentView: View {
         .foregroundStyle(Color(hex: 0x17263A))
       Spacer()
     }
+    .frame(width: 916, height: 66)
     .padding(.horizontal, 22)
-    .frame(height: 66)
     .background(.white.opacity(0.72))
     .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.9)).frame(height: 1) }
   }
