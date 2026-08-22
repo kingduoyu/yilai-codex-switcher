@@ -1,0 +1,6 @@
+#include "resource.h"
+
+IDI_APP ICON "Assets\\YilaiCodexSwitcher.ico"
+IDR_BACKGROUND RCDATA "Assets\\liquid-glass-background.png"
+IDR_LOGO RCDATA "Assets\\yilai-switcher-logo.png"
+1 24 "app.manifest"

@@ -1,29 +1,37 @@
-# 易来 Codex 切换器 for macOS
+# 易来 Codex 切换器
 
-macOS 13+ 原生 SwiftUI/AppKit 版本，支持 Intel 与 Apple Silicon。
+面向 Codex CLI 与 Codex 桌面版的一键 API 配置工具。填写易来 API Key 后，可以在易来 API 和用户原有配置之间安全切换。
 
 ## 下载
 
-从 [Releases](https://github.com/kingduoyu/yilai-codex-switcher-macos/releases/latest) 下载 `YilaiCodexSwitcher-macOS-universal.dmg`。双击 DMG，再把 `易来 Codex 切换器.app` 拖进 `Applications`。
+- Windows 10/11 x64：从 [Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 下载 `YilaiCodexSwitcher.exe`，无需安装运行库。
+- macOS 13+：下载 `YilaiCodexSwitcher-macOS-universal.dmg`，同时支持 Intel 与 Apple Silicon。
 
-当前版本使用 ad-hoc 签名，没有 Apple Developer ID 公证。首次打开若被 Gatekeeper 拦截，请右键应用并选择“打开”。
+当前 Windows 版本未进行代码签名，macOS 版本使用 ad-hoc 签名且未公证。首次打开若被系统拦截，请查看 Release 中的平台说明。
+
+## 使用
+
+1. 完全退出 Codex。
+2. 打开易来 Codex 切换器。
+3. 粘贴完整 API Key，不要添加 `Bearer` 或引号。
+4. 点击“切换到易来 API”。
+5. 重新打开 Codex。
+
+需要恢复原配置时，完全退出 Codex，点击“切换回官方”，再重新打开。
 
 ## 构建
 
-在安装了 Xcode Command Line Tools 的 Mac 上运行：
+Windows 需要 Windows 10/11 和 LLVM-MinGW UCRT：
+
+```powershell
+winget install --id MartinStorsjo.LLVM-MinGW.UCRT --exact
+pwsh -File Windows/build.ps1
+```
+
+macOS 需要 macOS 13+、Xcode Command Line Tools 和 Swift 5.9+：
 
 ```bash
 bash build-macos.sh
 ```
 
-产物：
-
-```text
-publish/mac-universal/易来 Codex 切换器.app
-publish/mac-universal/YilaiCodexSwitcher-macOS-universal.dmg
-publish/mac-universal/YilaiCodexSwitcher-macOS-universal.zip
-```
-
-构建脚本会创建通用二进制、应用图标和 ad-hoc 签名，并运行隔离配置自测。正式公开分发建议另行使用 Apple Developer ID 签名与公证。
-
-本仓库不包含 API Key、用户 Codex 配置或认证文件。
+两个实现都会运行隔离配置自测，不会操作构建机器的真实 Codex 配置。本仓库不包含 API Key、用户配置或认证文件。

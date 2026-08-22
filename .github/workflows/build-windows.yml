@@ -1,0 +1,37 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM-MinGW
+        shell: pwsh
+        run: >-
+          winget install --id MartinStorsjo.LLVM-MinGW.UCRT --exact
+          --accept-package-agreements --accept-source-agreements --silent
+
+      - name: Build native executable
+        shell: pwsh
+        run: pwsh -File Windows/build.ps1
+
+      - name: Run isolated configuration self-test
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "dist/windows/YilaiCodexSwitcher.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Self-test failed with exit code $($process.ExitCode)." }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: YilaiCodexSwitcher-windows-x64
+          path: dist/windows/YilaiCodexSwitcher.exe
+          if-no-files-found: error
