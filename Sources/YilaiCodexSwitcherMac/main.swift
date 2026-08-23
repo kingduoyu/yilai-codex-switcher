@@ -3,6 +3,13 @@ import Darwin
 import SwiftUI
 
 private let productName = "易来 Codex 切换器"
+private let productVersion = "3.0.1"
+
+struct SwitcherAlert: Identifiable {
+  let id = UUID()
+  let title: String
+  let message: String
+}
 
 private struct MacWindowControls: View {
   var body: some View {
@@ -39,6 +46,7 @@ final class SwitcherModel: ObservableObject {
   @Published var message = "切换前请完全退出 Codex，完成后重新打开。"
   @Published var messageIsError = false
   @Published var messageIsSuccess = false
+  @Published var alert: SwitcherAlert?
 
   private let service = CodexConfigurationService()
 
@@ -81,6 +89,10 @@ final class SwitcherModel: ObservableObject {
     message = error.localizedDescription
     messageIsError = true
     messageIsSuccess = false
+    alert = SwitcherAlert(
+      title: "配置未完成",
+      message: "\(error.localizedDescription)\n\nCodex 配置已恢复到操作前的状态，没有写入半成品配置。"
+    )
   }
 }
 
@@ -110,6 +122,13 @@ struct ContentView: View {
     .overlay(
       RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(
         Color.white.opacity(0.92), lineWidth: 1))
+    .alert(item: $model.alert) { alert in
+      Alert(
+        title: Text(alert.title),
+        message: Text(alert.message),
+        dismissButton: .default(Text("知道了"))
+      )
+    }
   }
 
   private var titleBar: some View {
@@ -248,6 +267,20 @@ struct ContentView: View {
       .focused($keyFocused)
 
       Button {
+        if let value = NSPasteboard.general.string(forType: .string) {
+          model.key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        keyFocused = true
+      } label: {
+        Image(systemName: "doc.on.clipboard")
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(Color(hex: 0x334A65))
+          .frame(width: 44, height: 44)
+      }
+      .buttonStyle(.plain)
+      .help("粘贴 Key")
+
+      Button {
         model.showKey.toggle()
         keyFocused = true
       } label: {
@@ -279,7 +312,7 @@ struct ContentView: View {
       Text(model.message)
         .font(.system(size: 15))
       Spacer()
-      Text("macOS 13+  ·  v3.0.0")
+      Text("macOS 13+  ·  v\(productVersion)")
         .font(.system(size: 13))
         .foregroundStyle(Color(hex: 0x62778F))
     }
@@ -316,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
+    installMainMenu()
     let content = NSHostingView(rootView: ContentView())
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 960, height: 650),
@@ -338,6 +372,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+  private func installMainMenu() {
+    let mainMenu = NSMenu()
+
+    let appMenuItem = NSMenuItem()
+    let appMenu = NSMenu()
+    appMenu.addItem(
+      withTitle: "关于\(productName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+      keyEquivalent: "")
+    appMenu.addItem(.separator())
+    appMenu.addItem(
+      withTitle: "退出\(productName)", action: #selector(NSApplication.terminate(_:)),
+      keyEquivalent: "q")
+    appMenuItem.submenu = appMenu
+    mainMenu.addItem(appMenuItem)
+
+    let editMenuItem = NSMenuItem()
+    editMenuItem.title = "编辑"
+    let editMenu = NSMenu(title: "编辑")
+    editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+    editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+    editMenu.addItem(.separator())
+    editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    editMenu.addItem(
+      withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editMenuItem.submenu = editMenu
+    mainMenu.addItem(editMenuItem)
+
+    NSApp.mainMenu = mainMenu
+  }
 }
 
 private func renderScreenshot(to destination: URL) throws {

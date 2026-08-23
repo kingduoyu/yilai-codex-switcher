@@ -89,23 +89,38 @@ final class CodexConfigurationService {
     }
 
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
+    let backupAlreadyExisted = exists(paths.manifest)
     let manifest = try ensureBackup()
-    var authMoved = false
+    var authMoves: [(from: URL, to: URL)] = []
     do {
       let existing = exists(paths.config) ? try read(paths.config) : ""
       try writeAtomic(buildYilaiConfig(existing: existing, key: key), to: paths.config)
+
+      // A disabled auth without our manifest is residue from an interrupted older run.
+      // Preserve it, then make the current auth the authoritative restore point.
+      if !backupAlreadyExisted && exists(paths.disabledAuth) {
+        let archive = nextAuthArchiveURL()
+        try files.moveItem(at: paths.disabledAuth, to: archive)
+        authMoves.append((paths.disabledAuth, archive))
+      }
+
       if exists(paths.auth) {
-        guard !exists(paths.disabledAuth) else {
-          throw SwitcherError.message("auth.json.yilai-disabled 已存在，为避免覆盖登录信息，未执行切换")
+        if exists(paths.disabledAuth) {
+          let archive = nextAuthArchiveURL()
+          try files.moveItem(at: paths.auth, to: archive)
+          authMoves.append((paths.auth, archive))
+        } else {
+          try files.moveItem(at: paths.auth, to: paths.disabledAuth)
+          authMoves.append((paths.auth, paths.disabledAuth))
         }
-        try files.moveItem(at: paths.auth, to: paths.disabledAuth)
-        authMoved = true
       } else if manifest.authExisted && !exists(paths.disabledAuth) {
         throw SwitcherError.message("原有 auth.json 及其停用文件均不存在，未执行切换")
       }
+
+      try verifyYilaiConfiguration(expectedKey: key)
     } catch {
-      if authMoved && !exists(paths.auth) && exists(paths.disabledAuth) {
-        try? files.moveItem(at: paths.disabledAuth, to: paths.auth)
+      for move in authMoves.reversed() where !exists(move.from) && exists(move.to) {
+        try? files.moveItem(at: move.to, to: move.from)
       }
       try? restoreConfig(manifest)
       throw error
@@ -114,17 +129,27 @@ final class CodexConfigurationService {
 
   func switchToOfficial() throws {
     let manifest = try readManifest()
+    var archivedActiveAuth: URL?
     if manifest.authExisted {
       guard exists(paths.disabledAuth) else {
         throw SwitcherError.message("找不到 auth.json.yilai-disabled，无法恢复原有登录")
       }
-      guard !exists(paths.auth) else {
-        throw SwitcherError.message("检测到新的 auth.json。为避免覆盖登录信息，请完全退出 Codex 后再重试")
+      if exists(paths.auth) {
+        let archive = nextAuthArchiveURL()
+        try files.moveItem(at: paths.auth, to: archive)
+        archivedActiveAuth = archive
       }
     }
-    try restoreConfig(manifest)
-    if manifest.authExisted { try files.moveItem(at: paths.disabledAuth, to: paths.auth) }
-    try files.removeItem(at: paths.backup)
+    do {
+      try restoreConfig(manifest)
+      if manifest.authExisted { try files.moveItem(at: paths.disabledAuth, to: paths.auth) }
+      try files.removeItem(at: paths.backup)
+    } catch {
+      if let archive = archivedActiveAuth, !exists(paths.auth), exists(archive) {
+        try? files.moveItem(at: archive, to: paths.auth)
+      }
+      throw error
+    }
   }
 
   private func ensureBackup() throws -> BackupManifest {
@@ -182,6 +207,38 @@ final class CodexConfigurationService {
     return lines.joined(separator: newline) + newline
   }
 
+  private func verifyYilaiConfiguration(expectedKey: String) throws {
+    let contents = try read(paths.config)
+    let lines = splitLines(contents)
+    let firstTable = lines.firstIndex(where: isTable) ?? lines.endIndex
+    let topLevel = Array(lines[..<firstTable])
+
+    guard settingValue("model_provider", in: topLevel) == "\"yilai\"" else {
+      throw SwitcherError.message("写入后校验失败：model_provider 未设置为 yilai")
+    }
+    guard settingValue("model", in: topLevel) == "\"gpt-5.6-sol\"" else {
+      throw SwitcherError.message("写入后校验失败：未找到 gpt-5.6-sol 模型")
+    }
+
+    guard
+      let providerStart = lines.firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[model_providers.yilai]"
+      })
+    else {
+      throw SwitcherError.message("写入后校验失败：易来 provider 配置不存在")
+    }
+    let providerEnd = lines[(providerStart + 1)...].firstIndex(where: isTable) ?? lines.endIndex
+    let provider = Array(lines[(providerStart + 1)..<providerEnd])
+    guard settingValue("base_url", in: provider) == "\"https://api.yilai-ai.com\"",
+      settingValue("wire_api", in: provider) == "\"responses\"",
+      settingValue("requires_openai_auth", in: provider) == "false",
+      settingValue("experimental_bearer_token", in: provider) == "\"\(escapeToml(expectedKey))\"",
+      settingValue("http_headers", in: provider)?.contains("local-image-extension") == true
+    else {
+      throw SwitcherError.message("写入后校验失败：易来地址、Key 或生图请求头不完整")
+    }
+  }
+
   private func removeManagedProvider(from lines: inout [String]) {
     while let start = lines.firstIndex(where: {
       $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[model_providers.yilai]"
@@ -223,6 +280,18 @@ final class CodexConfigurationService {
     let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
     guard value.hasPrefix(key) else { return false }
     return value.dropFirst(key.count).trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("=")
+  }
+
+  private func settingValue(_ key: String, in lines: [String]) -> String? {
+    guard let line = lines.first(where: { isSetting($0, key: key) }) else { return nil }
+    return line.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func nextAuthArchiveURL() -> URL {
+    paths.codex.appendingPathComponent(
+      "auth.json.yilai-session-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-"))-\(UUID().uuidString.prefix(8))"
+    )
   }
 
   private func escapeToml(_ value: String) -> String {
@@ -277,13 +346,25 @@ func runSelfTest() throws {
   try service.switchToYilai(key: "sk-test-key")
   guard try service.mode() == .yilai else { throw SwitcherError.message("自测失败：模式识别") }
   let switched = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
-  guard switched.contains("requires_openai_auth = false"),
+  guard switched.contains("model_provider = \"yilai\""),
+    switched.contains("model = \"gpt-5.6-sol\""),
+    switched.contains("requires_openai_auth = false"),
     switched.contains("local-image-extension"), switched.contains("sk-test-key"),
     switched.contains("[plugins.\"browser@openai-bundled\"]")
   else {
     throw SwitcherError.message("自测失败：易来配置内容")
   }
+  try "{\"auth_mode\":\"transient\"}".data(using: .utf8)!.write(
+    to: root.appendingPathComponent("auth.json"))
   try service.switchToYilai(key: "sk-new-key")
+  let archivedAuths = try FileManager.default.contentsOfDirectory(
+    at: root, includingPropertiesForKeys: nil
+  ).filter { $0.lastPathComponent.hasPrefix("auth.json.yilai-session-") }
+  guard archivedAuths.count == 1, !FileManager.default.fileExists(
+    atPath: root.appendingPathComponent("auth.json").path)
+  else {
+    throw SwitcherError.message("自测失败：重复切换登录保护")
+  }
   try service.switchToOfficial()
   guard
     try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
