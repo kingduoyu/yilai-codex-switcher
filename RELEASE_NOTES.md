@@ -16,6 +16,8 @@
 ## macOS
 
 - 原生 SwiftUI/AppKit 通用版本，同时支持 Intel `x86_64` 与 Apple Silicon `arm64`。
+- DMG SHA-256：`83EE814DC054EBC696AFEE23D1BA33DCCEE8822EE1907675D56FCEDD6DFC48F6`
+- ZIP SHA-256：`A28CA1A12CA07D4BD24C5A0976ACF7508F3A37D5CEB2DBB5FDBDCDCCD5528951`
 - 当前使用 ad-hoc 签名；首次打开若被 Gatekeeper 拦截，请右键应用并选择“打开”。
 
 推荐 Windows 用户下载 `.exe`，macOS 用户下载 `.dmg`；`.zip` 保留为 macOS 备用包。
