@@ -1,6 +1,6 @@
 # 易来 Codex 切换器 Release Notes
 
-## v3.1.0（待发布）
+## v3.1.0
 
 - “切换回官方”不再原样恢复切换前的 `config.toml`，避免切回另一个第三方 provider。
 - 官方模式会移除顶层 `model_provider` 和所有 `[model_providers.*]` 定义，写入 CC-Switch OpenAI Official 当前使用的 `gpt-5.6-terra`。
@@ -8,7 +8,9 @@
 - 没有本工具备份清单时也能直接切换为官方配置；已有官方登录仍按原有安全规则恢复。
 - 当前模式明确区分“OpenAI 官方”“易来 API”“其他第三方配置”和“尚未配置”。
 - Windows 与 macOS 隔离自测新增“第三方配置 -> 易来 -> OpenAI 官方”和无备份直切官方覆盖。
-- Windows 候选 SHA-256：`CA79AD3482C0F7FCD3AA9C02A158758E62E6C46992034AA214D8457238ECD1B8`；macOS 3.1.0 制品尚未构建。
+- Windows EXE SHA-256：`B7B3B9D49950488933672580120AA535456D21538E9B57AD75B46A48968777ED`。
+- macOS DMG SHA-256：`E58A60C3FDD32C199534A5D81F8D5D8C50FC7A23DEE9EA83BBC9AE2DB576A58C`。
+- macOS ZIP SHA-256：`BD04917FC8570C598B1862CFE5DF295FFAB7CAAD29569792F9B2C7E16D81A8F4`。
 
 ## v3.0.1
 
