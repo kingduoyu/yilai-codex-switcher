@@ -5,7 +5,8 @@
 
 enum class CodexMode {
     NotConfigured,
-    OfficialOrOther,
+    Official,
+    Other,
     Yilai,
 };
 
@@ -25,4 +26,3 @@ CodexMode getMode(const CodexPaths& paths);
 void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths);
 void switchToOfficial(const CodexPaths& paths);
 bool runSelfTest(std::wstring& error);
-

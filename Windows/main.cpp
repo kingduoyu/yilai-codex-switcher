@@ -436,7 +436,7 @@ private:
         const UINT32 footerColor = messageError_ ? 0xB3263E : (messageSuccess_ ? 0x0D7F57 : 0x40566F);
         drawIcon(L"\xE83D", layout_.rect(56, 578, 32, 34), color(footerColor));
         drawText(message_.c_str(), layout_.rect(92, 572, 600, 46), body_, color(footerColor));
-        drawText(L"Windows 10/11  ·  v3.0.0", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
+        drawText(L"Windows 10/11  ·  v3.1.0", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
 
         const HRESULT result = target_->EndDraw();
         if (result == D2DERR_RECREATE_TARGET) {
@@ -627,7 +627,7 @@ private:
         try {
             switchToOfficial(currentPaths());
             SetWindowTextW(edit_, L"");
-            setMessage(L"已恢复切换前的配置，请重新打开 Codex。", true, false);
+            setMessage(L"已切换到 OpenAI 官方配置，请重新打开 Codex。", true, false);
             refreshMode();
         } catch (const std::exception& exception) {
             setMessage(exceptionText(exception), false, true);
@@ -638,7 +638,8 @@ private:
         try {
             mode_ = getMode(currentPaths());
             if (mode_ == CodexMode::Yilai) modeLabel_ = L"易来 API";
-            else if (mode_ == CodexMode::OfficialOrOther) modeLabel_ = L"官方或原有配置";
+            else if (mode_ == CodexMode::Official) modeLabel_ = L"OpenAI 官方";
+            else if (mode_ == CodexMode::Other) modeLabel_ = L"其他第三方配置";
             else modeLabel_ = L"尚未配置";
         } catch (const std::exception& exception) {
             mode_ = CodexMode::NotConfigured;

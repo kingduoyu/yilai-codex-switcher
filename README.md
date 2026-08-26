@@ -1,6 +1,6 @@
 # 易来 Codex 切换器
 
-面向 Codex CLI 与 Codex 桌面版的一键 API 配置工具。填写易来 API Key 后，可以在易来 API 和用户原有配置之间安全切换。
+面向 Codex CLI 与 Codex 桌面版的一键 API 配置工具。填写易来 API Key 后，可以在易来 API 与 OpenAI 官方配置之间安全切换。
 
 ## 下载
 
@@ -17,7 +17,7 @@
 4. 点击“切换到易来 API”。
 5. 重新打开 Codex。
 
-需要恢复原配置时，完全退出 Codex，点击“切换回官方”，再重新打开。
+需要切回官方时，完全退出 Codex，点击“切换回官方”，再重新打开。切换器会删除第三方 provider 选择和定义、保留插件等通用设置，并恢复受保护的 OpenAI 官方登录；不会恢复切换前可能存在的第三方配置。Codex 的 `model_provider` 默认值是内置 `openai`，见 [OpenAI Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
 ## 构建
 

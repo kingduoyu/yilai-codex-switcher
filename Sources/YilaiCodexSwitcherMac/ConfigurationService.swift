@@ -2,13 +2,15 @@ import Foundation
 
 enum CodexMode {
   case notConfigured
-  case officialOrOther
+  case official
+  case other
   case yilai
 
   var label: String {
     switch self {
     case .notConfigured: return "尚未配置"
-    case .officialOrOther: return "官方或原有配置"
+    case .official: return "OpenAI 官方"
+    case .other: return "其他第三方配置"
     case .yilai: return "易来 API"
     }
   }
@@ -75,10 +77,12 @@ final class CodexConfigurationService {
         let value =
           line.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init)?
           .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value == "\"yilai\"" || value == "'yilai'" ? .yilai : .officialOrOther
+        if value == "\"yilai\"" || value == "'yilai'" { return .yilai }
+        if value == "\"openai\"" || value == "'openai'" { return .official }
+        return .other
       }
     }
-    return .officialOrOther
+    return .official
   }
 
   func switchToYilai(key rawKey: String) throws {
@@ -128,9 +132,10 @@ final class CodexConfigurationService {
   }
 
   func switchToOfficial() throws {
-    let manifest = try readManifest()
+    try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
+    let manifest = exists(paths.manifest) ? try readManifest() : nil
     var archivedActiveAuth: URL?
-    if manifest.authExisted {
+    if manifest?.authExisted == true {
       guard exists(paths.disabledAuth) else {
         throw SwitcherError.message("找不到 auth.json.yilai-disabled，无法恢复原有登录")
       }
@@ -140,16 +145,36 @@ final class CodexConfigurationService {
         archivedActiveAuth = archive
       }
     }
+
+    let previousConfig = exists(paths.config) ? try read(paths.config) : nil
+    var baseConfig = previousConfig ?? ""
+    if previousConfig == nil, manifest?.configExisted == true, exists(paths.backupConfig) {
+      baseConfig = try read(paths.backupConfig)
+    }
+
+    var authRestored = false
     do {
-      try restoreConfig(manifest)
-      if manifest.authExisted { try files.moveItem(at: paths.disabledAuth, to: paths.auth) }
-      try files.removeItem(at: paths.backup)
+      try writeAtomic(buildOfficialConfig(existing: baseConfig), to: paths.config)
+      if manifest?.authExisted == true {
+        try files.moveItem(at: paths.disabledAuth, to: paths.auth)
+        authRestored = true
+      }
     } catch {
+      if authRestored, exists(paths.auth), !exists(paths.disabledAuth) {
+        try? files.moveItem(at: paths.auth, to: paths.disabledAuth)
+      }
       if let archive = archivedActiveAuth, !exists(paths.auth), exists(archive) {
         try? files.moveItem(at: archive, to: paths.auth)
       }
+      if let previousConfig {
+        try? writeAtomic(previousConfig, to: paths.config)
+      } else if exists(paths.config) {
+        try? files.removeItem(at: paths.config)
+      }
       throw error
     }
+
+    if exists(paths.backup) { try? files.removeItem(at: paths.backup) }
   }
 
   private func ensureBackup() throws -> BackupManifest {
@@ -207,6 +232,18 @@ final class CodexConfigurationService {
     return lines.joined(separator: newline) + newline
   }
 
+  private func buildOfficialConfig(existing: String) -> String {
+    let newline = existing.contains("\r\n") ? "\r\n" : "\n"
+    var lines = splitLines(existing)
+    removeAllModelProviders(from: &lines)
+    removeTopLevel("model_provider", from: &lines)
+    setTopLevel("model", value: "\"gpt-5.6-terra\"", in: &lines)
+    while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+      lines.removeLast()
+    }
+    return lines.joined(separator: newline) + newline
+  }
+
   private func verifyYilaiConfiguration(expectedKey: String) throws {
     let contents = try read(paths.config)
     let lines = splitLines(contents)
@@ -253,12 +290,31 @@ final class CodexConfigurationService {
     }
   }
 
+  private func removeAllModelProviders(from lines: inout [String]) {
+    while let start = lines.firstIndex(where: isModelProviderTable) {
+      var first = start
+      var end = start + 1
+      while end < lines.count && !isTable(lines[end]) { end += 1 }
+      if first > 0 && lines[first - 1].trimmingCharacters(in: .whitespacesAndNewlines) == marker {
+        first -= 1
+      }
+      lines.removeSubrange(first..<end)
+    }
+  }
+
   private func setTopLevel(_ key: String, value: String, in lines: inout [String]) {
     let table = lines.firstIndex(where: isTable) ?? lines.endIndex
     if let index = lines[..<table].firstIndex(where: { isSetting($0, key: key) }) {
       lines[index] = "\(key) = \(value)"
     } else {
       lines.insert("\(key) = \(value)", at: table)
+    }
+  }
+
+  private func removeTopLevel(_ key: String, from lines: inout [String]) {
+    let table = lines.firstIndex(where: isTable) ?? lines.endIndex
+    for index in lines[..<table].indices.reversed() where isSetting(lines[index], key: key) {
+      lines.remove(at: index)
     }
   }
 
@@ -274,6 +330,11 @@ final class CodexConfigurationService {
   private func isTable(_ line: String) -> Bool {
     let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
     return value.hasPrefix("[") && value.hasSuffix("]")
+  }
+
+  private func isModelProviderTable(_ line: String) -> Bool {
+    let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.hasPrefix("[model_providers.") && value.hasSuffix("]")
   }
 
   private func isSetting(_ line: String, key: String) -> Bool {
@@ -343,6 +404,9 @@ func runSelfTest() throws {
   try originalAuth.data(using: .utf8)!.write(to: root.appendingPathComponent("auth.json"))
 
   let service = CodexConfigurationService(codexDirectory: root)
+  guard try service.mode() == .other else {
+    throw SwitcherError.message("自测失败：第三方模式识别")
+  }
   try service.switchToYilai(key: "sk-test-key")
   guard try service.mode() == .yilai else { throw SwitcherError.message("自测失败：模式识别") }
   let switched = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
@@ -366,21 +430,34 @@ func runSelfTest() throws {
     throw SwitcherError.message("自测失败：重复切换登录保护")
   }
   try service.switchToOfficial()
-  guard
-    try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
-      == originalConfig,
+  let official = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard try service.mode() == .official,
+    official.contains("model = \"gpt-5.6-terra\""),
+    !official.contains("model_provider"),
+    !official.contains("[model_providers."),
+    !official.contains("sk-new-key"),
+    official.contains("[plugins.\"browser@openai-bundled\"]"),
     try String(contentsOf: root.appendingPathComponent("auth.json"), encoding: .utf8)
       == originalAuth
-  else {
-    throw SwitcherError.message("自测失败：原样恢复")
-  }
+  else { throw SwitcherError.message("自测失败：官方配置生成") }
 
   let newRoot = root.appendingPathComponent("new-user", isDirectory: true)
   let newService = CodexConfigurationService(codexDirectory: newRoot)
   try newService.switchToYilai(key: "sk-new-user")
   try newService.switchToOfficial()
-  guard !FileManager.default.fileExists(atPath: newRoot.appendingPathComponent("config.toml").path)
-  else {
-    throw SwitcherError.message("自测失败：新用户恢复")
+  let newOfficial = try String(
+    contentsOf: newRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard try newService.mode() == .official,
+    newOfficial.contains("model = \"gpt-5.6-terra\""),
+    !FileManager.default.fileExists(atPath: newRoot.appendingPathComponent("auth.json").path)
+  else { throw SwitcherError.message("自测失败：新用户切换官方") }
+
+  let directRoot = root.appendingPathComponent("direct-official", isDirectory: true)
+  try FileManager.default.createDirectory(at: directRoot, withIntermediateDirectories: true)
+  try originalConfig.data(using: .utf8)!.write(to: directRoot.appendingPathComponent("config.toml"))
+  let directService = CodexConfigurationService(codexDirectory: directRoot)
+  try directService.switchToOfficial()
+  guard try directService.mode() == .official else {
+    throw SwitcherError.message("自测失败：无备份时不能直接切换官方")
   }
 }

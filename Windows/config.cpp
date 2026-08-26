@@ -16,6 +16,7 @@ namespace {
 
 constexpr const char* kProviderId = "yilai";
 constexpr const char* kMarker = "# Managed by Yilai Codex Switcher";
+constexpr const char* kOfficialModel = "gpt-5.6-terra";
 
 struct BackupManifest {
     bool configExisted = false;
@@ -145,6 +146,36 @@ void setTopLevel(std::vector<std::string>& lines, const std::string& key, const 
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(firstTable), key + " = " + value);
 }
 
+void removeTopLevel(std::vector<std::string>& lines, const std::string& key) {
+    size_t firstTable = lines.size();
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (isTableHeader(lines[i])) {
+            firstTable = i;
+            break;
+        }
+    }
+    for (size_t i = firstTable; i-- > 0;) {
+        if (isSetting(lines[i], key)) lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+}
+
+bool isModelProviderHeader(const std::string& line) {
+    const std::string value = trim(line);
+    return value.rfind("[model_providers.", 0) == 0 && value.size() > 18 && value.back() == ']';
+}
+
+void removeAllModelProviders(std::vector<std::string>& lines) {
+    while (true) {
+        auto startIt = std::find_if(lines.begin(), lines.end(), isModelProviderHeader);
+        if (startIt == lines.end()) return;
+        size_t start = static_cast<size_t>(std::distance(lines.begin(), startIt));
+        size_t end = start + 1;
+        while (end < lines.size() && !isTableHeader(lines[end])) ++end;
+        if (start > 0 && trim(lines[start - 1]) == kMarker) --start;
+        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(start), lines.begin() + static_cast<std::ptrdiff_t>(end));
+    }
+}
+
 void removeManagedProvider(std::vector<std::string>& lines) {
     const std::string header = std::string("[model_providers.") + kProviderId + "]";
     while (true) {
@@ -184,6 +215,23 @@ std::string buildYilaiConfig(const std::string& existing, const std::string& key
     lines.emplace_back("requires_openai_auth = false");
     lines.emplace_back("http_headers = { \"x-openai-actor-authorization\" = \"local-image-extension\" }");
     lines.emplace_back("experimental_bearer_token = \"" + escapeToml(key) + "\"");
+
+    std::ostringstream output;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i) output << newline;
+        output << lines[i];
+    }
+    output << newline;
+    return output.str();
+}
+
+std::string buildOfficialConfig(const std::string& existing) {
+    const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+    auto lines = splitLines(existing);
+    removeAllModelProviders(lines);
+    removeTopLevel(lines, "model_provider");
+    setTopLevel(lines, "model", std::string("\"") + kOfficialModel + "\"");
+    while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
 
     std::ostringstream output;
     for (size_t i = 0; i < lines.size(); ++i) {
@@ -264,10 +312,12 @@ CodexMode getMode(const CodexPaths& paths) {
         if (isSetting(line, "model_provider")) {
             const size_t separator = line.find('=');
             const std::string value = separator == std::string::npos ? "" : trim(line.substr(separator + 1));
-            return (value == "\"yilai\"" || value == "'yilai'") ? CodexMode::Yilai : CodexMode::OfficialOrOther;
+            if (value == "\"yilai\"" || value == "'yilai'") return CodexMode::Yilai;
+            if (value == "\"openai\"" || value == "'openai'") return CodexMode::Official;
+            return CodexMode::Other;
         }
     }
-    return CodexMode::OfficialOrOther;
+    return CodexMode::Official;
 }
 
 void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
@@ -302,16 +352,41 @@ void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
 }
 
 void switchToOfficial(const CodexPaths& paths) {
-    const BackupManifest manifest = readManifest(paths);
-    if (manifest.authExisted) {
+    std::error_code error;
+    fs::create_directories(paths.codex, error);
+    if (error) fail(L"无法创建 .codex 目录");
+
+    const bool hasManifest = pathExists(paths.manifest);
+    const BackupManifest manifest = hasManifest ? readManifest(paths) : BackupManifest{};
+    if (hasManifest && manifest.authExisted) {
         if (!pathExists(paths.disabledAuth)) fail(L"找不到 auth.json.yilai-disabled，无法恢复原有登录");
         if (pathExists(paths.auth)) fail(L"检测到新的 auth.json。为避免覆盖登录信息，请完全退出 Codex 后再重试");
     }
-    restoreConfig(paths, manifest);
-    if (manifest.authExisted) fs::rename(paths.disabledAuth, paths.auth);
-    std::error_code error;
-    fs::remove_all(paths.backup, error);
-    if (error) fail(L"无法清理备份目录");
+
+    const bool configExisted = pathExists(paths.config);
+    const std::string previousConfig = configExisted ? readBytes(paths.config) : std::string();
+    std::string baseConfig = previousConfig;
+    if (!configExisted && hasManifest && manifest.configExisted && pathExists(paths.backupConfig)) {
+        baseConfig = readBytes(paths.backupConfig);
+    }
+
+    bool authRestored = false;
+    try {
+        writeAtomic(paths.config, buildOfficialConfig(baseConfig));
+        if (hasManifest && manifest.authExisted) {
+            fs::rename(paths.disabledAuth, paths.auth);
+            authRestored = true;
+        }
+    } catch (...) {
+        if (authRestored && pathExists(paths.auth) && !pathExists(paths.disabledAuth)) {
+            fs::rename(paths.auth, paths.disabledAuth, error);
+        }
+        if (configExisted) writeAtomic(paths.config, previousConfig);
+        else fs::remove(paths.config, error);
+        throw;
+    }
+
+    if (pathExists(paths.backup)) fs::remove_all(paths.backup, error);
 }
 
 bool runSelfTest(std::wstring& error) {
@@ -326,6 +401,7 @@ bool runSelfTest(std::wstring& error) {
         const std::string originalAuth = "{\"auth_mode\":\"chatgpt\"}";
         writeAtomic(paths.config, originalConfig);
         writeAtomic(paths.auth, originalAuth);
+        require(getMode(paths) == CodexMode::Other, L"自测失败：第三方模式识别");
         switchToYilai(L"sk-test-key", paths);
         const std::string yilai = readBytes(paths.config);
         require(getMode(paths) == CodexMode::Yilai, L"自测失败：模式识别");
@@ -337,14 +413,31 @@ bool runSelfTest(std::wstring& error) {
         switchToYilai(L"sk-new-key", paths);
         require(readBytes(paths.config).find("sk-new-key") != std::string::npos, L"自测失败：重复切换");
         switchToOfficial(paths);
-        require(readBytes(paths.config) == originalConfig, L"自测失败：配置字节级恢复");
+        const std::string official = readBytes(paths.config);
+        require(getMode(paths) == CodexMode::Official, L"自测失败：官方模式识别");
+        require(official.find("model = \"gpt-5.6-terra\"") != std::string::npos, L"自测失败：官方模型");
+        require(official.find("model_provider") == std::string::npos, L"自测失败：第三方 provider 仍被选中");
+        require(official.find("[model_providers.") == std::string::npos, L"自测失败：第三方 provider 定义未清理");
+        require(official.find("sk-new-key") == std::string::npos, L"自测失败：易来 Key 未清理");
+        require(official.find("[plugins.\"browser@openai-bundled\"]") != std::string::npos, L"自测失败：官方切换未保留通用配置");
         require(readBytes(paths.auth) == originalAuth, L"自测失败：登录恢复");
 
         const auto newPaths = pathsFor(root / L"new-user");
         switchToYilai(L"sk-new-user", newPaths);
         require(pathExists(newPaths.config) && !pathExists(newPaths.auth), L"自测失败：新用户切换");
         switchToOfficial(newPaths);
-        require(!pathExists(newPaths.config) && !pathExists(newPaths.auth), L"自测失败：新用户恢复");
+        require(pathExists(newPaths.config) && getMode(newPaths) == CodexMode::Official,
+                L"自测失败：新用户切换官方");
+        require(readBytes(newPaths.config).find("model = \"gpt-5.6-terra\"") != std::string::npos,
+                L"自测失败：新用户官方模型");
+        require(!pathExists(newPaths.auth), L"自测失败：新用户不应生成登录凭据");
+
+        const auto directPaths = pathsFor(root / L"direct-official");
+        fs::create_directories(directPaths.codex);
+        writeAtomic(directPaths.config, originalConfig);
+        switchToOfficial(directPaths);
+        require(getMode(directPaths) == CodexMode::Official,
+                L"自测失败：无备份时不能直接切换官方");
         return true;
     } catch (const std::exception& exception) {
         error = errorText(exception);

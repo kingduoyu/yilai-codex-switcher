@@ -1,3 +1,5 @@
-7474dcfc552884cab39be9f172f762db273af5545d05cb4857ecb0f5a13d2d49  YilaiCodexSwitcher.exe
+# v3.1.0 Windows candidate
+ca79ad3482c0f7fcd3aa9c02a158758e62e6c46992034aa214d8457238ecd1b8  YilaiCodexSwitcher.exe
+# v3.0.1 published macOS artifacts; replace when v3.1.0 is built on macOS
 83ee814dc054ebc696afee23d1ba33dccee8822ee1907675d56fcedd6dfc48f6  YilaiCodexSwitcher-macOS-universal.dmg
 a28ca1a12ca07d4bd24c5a0976acf7508f3a37d5ceb2dbb5fdbdcdccd5528951  YilaiCodexSwitcher-macOS-universal.zip

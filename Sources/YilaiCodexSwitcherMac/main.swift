@@ -3,7 +3,7 @@ import Darwin
 import SwiftUI
 
 private let productName = "易来 Codex 切换器"
-private let productVersion = "3.0.1"
+private let productVersion = "3.1.0"
 
 struct SwitcherAlert: Identifiable {
   let id = UUID()
@@ -42,7 +42,7 @@ private struct MacWindowControls: View {
 final class SwitcherModel: ObservableObject {
   @Published var key = ""
   @Published var showKey = false
-  @Published var mode: CodexMode = .officialOrOther
+  @Published var mode: CodexMode = .notConfigured
   @Published var message = "切换前请完全退出 Codex，完成后重新打开。"
   @Published var messageIsError = false
   @Published var messageIsSuccess = false
@@ -68,7 +68,7 @@ final class SwitcherModel: ObservableObject {
   func restore() {
     do {
       try service.switchToOfficial()
-      message = "已恢复原有配置，请重新打开 Codex。"
+      message = "已切换到 OpenAI 官方配置，请重新打开 Codex。"
       messageIsError = false
       messageIsSuccess = true
       refreshMode()
