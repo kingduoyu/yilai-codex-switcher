@@ -160,17 +160,12 @@ final class CodexConfigurationService {
       baseConfig = try read(paths.backupConfig)
     }
 
-    var authRestored = false
     do {
       try writeAtomic(buildOfficialConfig(existing: baseConfig), to: paths.config)
       if manifest?.authExisted == true {
         try files.moveItem(at: paths.disabledAuth, to: paths.auth)
-        authRestored = true
       }
     } catch {
-      if authRestored, exists(paths.auth), !exists(paths.disabledAuth) {
-        try? files.moveItem(at: paths.auth, to: paths.disabledAuth)
-      }
       if let archive = archivedActiveAuth, !exists(paths.auth), exists(archive) {
         try? files.moveItem(at: archive, to: paths.auth)
       }
