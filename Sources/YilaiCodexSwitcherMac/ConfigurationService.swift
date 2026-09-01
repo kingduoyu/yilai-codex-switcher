@@ -69,6 +69,8 @@ final class CodexConfigurationService {
     paths = CodexPaths(codex: codexDirectory)
   }
 
+  var configurationPath: String { paths.config.path }
+
   func mode() throws -> CodexMode {
     guard exists(paths.config) else { return .notConfigured }
     for line in splitLines(try read(paths.config)) {
@@ -122,6 +124,12 @@ final class CodexConfigurationService {
       }
 
       try verifyYilaiConfiguration(expectedKey: key)
+      guard !exists(paths.auth) else {
+        throw SwitcherError.message("写入后校验失败：auth.json 仍在生效，请完全退出 Codex 后重试")
+      }
+      if manifest.authExisted && !exists(paths.disabledAuth) {
+        throw SwitcherError.message("写入后校验失败：原有官方登录未安全停用")
+      }
     } catch {
       for move in authMoves.reversed() where !exists(move.from) && exists(move.to) {
         try? files.moveItem(at: move.to, to: move.from)
@@ -148,7 +156,7 @@ final class CodexConfigurationService {
 
     let previousConfig = exists(paths.config) ? try read(paths.config) : nil
     var baseConfig = previousConfig ?? ""
-    if previousConfig == nil, manifest?.configExisted == true, exists(paths.backupConfig) {
+    if manifest?.configExisted == true, exists(paths.backupConfig) {
       baseConfig = try read(paths.backupConfig)
     }
 
@@ -215,6 +223,10 @@ final class CodexConfigurationService {
     removeManagedProvider(from: &lines)
     setTopLevel("model_provider", value: "\"yilai\"", in: &lines)
     setTopLevel("model", value: "\"gpt-5.6-sol\"", in: &lines)
+    // macOS users may keep ChatGPT OAuth in Keychain. Force file-only auth lookup while
+    // the auth.json file is disabled so a cached Free account cannot hide image generation.
+    setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
+    setTableSetting("features", key: "image_generation", value: "true", in: &lines)
     while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
       lines.removeLast()
     }
@@ -255,6 +267,20 @@ final class CodexConfigurationService {
     }
     guard settingValue("model", in: topLevel) == "\"gpt-5.6-sol\"" else {
       throw SwitcherError.message("写入后校验失败：未找到 gpt-5.6-sol 模型")
+    }
+    guard settingValue("cli_auth_credentials_store", in: topLevel) == "\"file\"" else {
+      throw SwitcherError.message("写入后校验失败：未切换到纯 API 登录存储")
+    }
+    guard
+      let featuresStart = lines.firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[features]"
+      })
+    else { throw SwitcherError.message("写入后校验失败：生图功能开关不存在") }
+    let featuresSearch = (featuresStart + 1)..<lines.endIndex
+    let featuresEnd = lines[featuresSearch].firstIndex(where: isTable) ?? lines.endIndex
+    let features = Array(lines[(featuresStart + 1)..<featuresEnd])
+    guard settingValue("image_generation", in: features) == "true" else {
+      throw SwitcherError.message("写入后校验失败：生图功能未启用")
     }
 
     guard
@@ -315,6 +341,34 @@ final class CodexConfigurationService {
     let table = lines.firstIndex(where: isTable) ?? lines.endIndex
     for index in lines[..<table].indices.reversed() where isSetting(lines[index], key: key) {
       lines.remove(at: index)
+    }
+  }
+
+  private func setTableSetting(
+    _ tableName: String, key: String, value: String, in lines: inout [String]
+  ) {
+    let header = "[\(tableName)]"
+    guard
+      let tableStart = lines.firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines) == header
+      })
+    else {
+      while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+        lines.removeLast()
+      }
+      if !lines.isEmpty { lines.append("") }
+      lines += [header, "\(key) = \(value)"]
+      return
+    }
+
+    let tableSearch = (tableStart + 1)..<lines.endIndex
+    let tableEnd = lines[tableSearch].firstIndex(where: isTable) ?? lines.endIndex
+    if let index = lines[(tableStart + 1)..<tableEnd].firstIndex(where: {
+      isSetting($0, key: key)
+    }) {
+      lines[index] = "\(key) = \(value)"
+    } else {
+      lines.insert("\(key) = \(value)", at: tableEnd)
     }
   }
 
@@ -398,7 +452,7 @@ func runSelfTest() throws {
   defer { try? FileManager.default.removeItem(at: root) }
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   let originalConfig =
-    "model_provider = \"custom\"\r\nmodel = \"gpt-old\"\r\n\r\n[model_providers.custom]\r\nname = \"Original\"\r\n\r\n[plugins.\"browser@openai-bundled\"]\r\nenabled = true\r\n"
+    "model_provider = \"custom\"\r\nmodel = \"gpt-old\"\r\ncli_auth_credentials_store = \"keyring\"\r\n\r\n[features]\r\nimage_generation = false\r\n\r\n[model_providers.custom]\r\nname = \"Original\"\r\n\r\n[plugins.\"browser@openai-bundled\"]\r\nenabled = true\r\n"
   let originalAuth = "{\"auth_mode\":\"chatgpt\"}"
   try originalConfig.data(using: .utf8)!.write(to: root.appendingPathComponent("config.toml"))
   try originalAuth.data(using: .utf8)!.write(to: root.appendingPathComponent("auth.json"))
@@ -412,6 +466,8 @@ func runSelfTest() throws {
   let switched = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
   guard switched.contains("model_provider = \"yilai\""),
     switched.contains("model = \"gpt-5.6-sol\""),
+    switched.contains("cli_auth_credentials_store = \"file\""),
+    switched.contains("image_generation = true"),
     switched.contains("requires_openai_auth = false"),
     switched.contains("local-image-extension"), switched.contains("sk-test-key"),
     switched.contains("[plugins.\"browser@openai-bundled\"]")
@@ -433,13 +489,15 @@ func runSelfTest() throws {
   let official = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
   guard try service.mode() == .official,
     official.contains("model = \"gpt-5.6-terra\""),
+    official.contains("cli_auth_credentials_store = \"keyring\""),
+    official.contains("image_generation = false"),
     !official.contains("model_provider"),
     !official.contains("[model_providers."),
     !official.contains("sk-new-key"),
     official.contains("[plugins.\"browser@openai-bundled\"]"),
     try String(contentsOf: root.appendingPathComponent("auth.json"), encoding: .utf8)
       == originalAuth
-  else { throw SwitcherError.message("自测失败：官方配置生成") }
+  else { throw SwitcherError.message("自测失败：官方配置和原凭据存储未恢复") }
 
   let newRoot = root.appendingPathComponent("new-user", isDirectory: true)
   let newService = CodexConfigurationService(codexDirectory: newRoot)
@@ -449,8 +507,30 @@ func runSelfTest() throws {
     contentsOf: newRoot.appendingPathComponent("config.toml"), encoding: .utf8)
   guard try newService.mode() == .official,
     newOfficial.contains("model = \"gpt-5.6-terra\""),
+    newOfficial.contains("cli_auth_credentials_store = \"file\""),
     !FileManager.default.fileExists(atPath: newRoot.appendingPathComponent("auth.json").path)
   else { throw SwitcherError.message("自测失败：新用户切换官方") }
+
+  let keyringOnlyRoot = root.appendingPathComponent("keyring-only", isDirectory: true)
+  try FileManager.default.createDirectory(at: keyringOnlyRoot, withIntermediateDirectories: true)
+  let keyringOnlyConfig =
+    "model = \"gpt-old\"\ncli_auth_credentials_store = \"keyring\"\n\n[plugins.\"browser@openai-bundled\"]\nenabled = true\n"
+  try keyringOnlyConfig.data(using: .utf8)!.write(
+    to: keyringOnlyRoot.appendingPathComponent("config.toml"))
+  let keyringOnlyService = CodexConfigurationService(codexDirectory: keyringOnlyRoot)
+  try keyringOnlyService.switchToYilai(key: "sk-keyring-only")
+  let keyringSwitched = try String(
+    contentsOf: keyringOnlyRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard keyringSwitched.contains("cli_auth_credentials_store = \"file\""),
+    !FileManager.default.fileExists(atPath: keyringOnlyRoot.appendingPathComponent("auth.json").path)
+  else { throw SwitcherError.message("自测失败：Keychain 混合登录未隔离") }
+  try keyringOnlyService.switchToOfficial()
+  let keyringOfficial = try String(
+    contentsOf: keyringOnlyRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard keyringOfficial.contains("cli_auth_credentials_store = \"keyring\""),
+    keyringOfficial.contains("model = \"gpt-5.6-terra\""),
+    keyringOfficial.contains("[plugins.\"browser@openai-bundled\"]")
+  else { throw SwitcherError.message("自测失败：Keychain 官方登录设置未恢复") }
 
   let directRoot = root.appendingPathComponent("direct-official", isDirectory: true)
   try FileManager.default.createDirectory(at: directRoot, withIntermediateDirectories: true)

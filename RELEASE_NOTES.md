@@ -1,5 +1,14 @@
 # 易来 Codex 切换器 Release Notes
 
+## v3.1.1
+
+- macOS 改用系统原生关闭与最小化按钮，移除会吞掉输入点击的全窗口拖动区域。
+- 补全标准“编辑”菜单并修复 API Key 输入框焦点，支持直接点击输入和 `Command+V` 粘贴。
+- 易来模式新增 `cli_auth_credentials_store = "file"`，避免 CC-Switch 混合登录保存在 macOS Keychain 的 Free 账号继续关闭生图能力。
+- 易来模式会明确写入 `[features] image_generation = true`，兼容曾手动关闭生图功能的旧配置。
+- 切换完成前校验真实 `~/.codex/config.toml`、纯 API 凭据模式及 `auth.json` 停用状态，失败时回滚并显示原因。
+- 切回官方时从备份恢复原来的 Keychain/File 凭据存储设置，同时继续移除第三方 provider。
+
 ## v3.1.0
 
 - “切换回官方”不再原样恢复切换前的 `config.toml`，避免切回另一个第三方 provider。

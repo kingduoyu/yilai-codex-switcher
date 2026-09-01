@@ -3,40 +3,12 @@ import Darwin
 import SwiftUI
 
 private let productName = "易来 Codex 切换器"
-private let productVersion = "3.1.0"
+private let productVersion = "3.1.1"
 
 struct SwitcherAlert: Identifiable {
   let id = UUID()
   let title: String
   let message: String
-}
-
-private struct MacWindowControls: View {
-  var body: some View {
-    HStack(spacing: 8) {
-      Button {
-        NSApp.keyWindow?.close()
-      } label: {
-        control(color: Color(red: 1.0, green: 0.38, blue: 0.34), symbol: "xmark")
-      }
-      Button {
-        NSApp.keyWindow?.miniaturize(nil)
-      } label: {
-        control(color: Color(red: 1.0, green: 0.74, blue: 0.24), symbol: "minus")
-      }
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func control(color: Color, symbol: String) -> some View {
-    ZStack {
-      Circle().fill(color).frame(width: 13, height: 13)
-      Image(systemName: symbol)
-        .font(.system(size: 7, weight: .bold))
-        .foregroundStyle(.black.opacity(0.55))
-    }
-    .frame(width: 18, height: 32)
-  }
 }
 
 final class SwitcherModel: ObservableObject {
@@ -56,7 +28,7 @@ final class SwitcherModel: ObservableObject {
     do {
       try service.switchToYilai(key: key)
       key = ""
-      message = "已切换到易来 API，请重新打开 Codex。"
+      message = "配置已校验并写入 \(service.configurationPath)，请重新打开 Codex。"
       messageIsError = false
       messageIsSuccess = true
       refreshMode()
@@ -133,8 +105,6 @@ struct ContentView: View {
 
   private var titleBar: some View {
     HStack(spacing: 15) {
-      MacWindowControls()
-
       if let logo = resourceImage("yilai-switcher-logo") {
         Image(nsImage: logo).resizable().scaledToFit().frame(width: 32, height: 32)
       }
@@ -144,7 +114,8 @@ struct ContentView: View {
       Spacer()
     }
     .frame(width: 916, height: 66)
-    .padding(.horizontal, 22)
+    .padding(.leading, 82)
+    .padding(.trailing, 22)
     .background(.white.opacity(0.72))
     .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.9)).frame(height: 1) }
   }
@@ -353,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let content = NSHostingView(rootView: ContentView())
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 960, height: 650),
-      styleMask: [.borderless, .closable, .miniaturizable],
+      styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
       backing: .buffered,
       defer: false
     )
@@ -362,7 +333,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     window.isOpaque = false
     window.backgroundColor = .clear
     window.hasShadow = true
-    window.isMovableByWindowBackground = true
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.standardWindowButton(.zoomButton)?.isHidden = true
+    window.isMovableByWindowBackground = false
     window.minSize = NSSize(width: 960, height: 650)
     window.maxSize = NSSize(width: 960, height: 650)
     window.center()
