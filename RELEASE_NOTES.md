@@ -8,6 +8,8 @@
 - 易来模式会明确写入 `[features] image_generation = true`，兼容曾手动关闭生图功能的旧配置。
 - 切换完成前校验真实 `~/.codex/config.toml`、纯 API 凭据模式及 `auth.json` 停用状态，失败时回滚并显示原因。
 - 切回官方时从备份恢复原来的 Keychain/File 凭据存储设置，同时继续移除第三方 provider。
+- macOS DMG SHA-256：`FF6EBB289347A8BF99E62610F39360BA896B051E401FBC32ED373B79EEA93AF9`。
+- macOS ZIP SHA-256：`314C1A05FF9BC68C11AED47390DDBCEA455BF4647D65ECA9003E2A472A57B9DB`。
 
 ## v3.1.0
 
