@@ -19,7 +19,9 @@
 - Build commit: 69612b0ff2660d2241c786779c9c0e0dfcb773f4.
 - Actions run: 33938933352, success. Both architectures compiled; isolated self-test and hdiutil verification passed.
 - UI proof: implementation-macos.png, 960 x 650, visually checked as v3.2.1 with intact controls and no exposed key.
-- Status: formal artifacts accepted for publication; no additional build or repeat test suite.
+- Status: published as the latest non-prerelease v3.2.1 at 2026-09-05T02:31:32Z.
+- Release commit: 0757599992cf6ed49ff0e634d650762234866445. Its differences from the build commit are documentation and checksum files only.
+- All four uploaded asset digests and sizes matched local artifacts before publication. The existing Windows and macOS latest/download entries both returned HTTP 200 after publication. No additional build or repeat test suite.
 - Windows SHA-256 remains 55f6e3954185bbb391d11ff89c5810b15e24a1e7b0caafe1c819aba34ece692a; no Windows rebuild or repeat acceptance suite.
 
 | Asset | Version | SHA-256 |
@@ -30,7 +32,9 @@
 
 ## Announcement
 
-- After both installers are available, update the relevant existing live announcement to direct users who cannot obtain models to reconfigure with the switcher, then restart Codex.
-- Preserve other announcement content and visibility settings. Record the selected announcement and final verification here after the update.
-- Selected live announcement: ID 25, GPT-6 已上线, active/popup, targeting all users, no schedule limit. Replace its old restart-only guidance, not unrelated announcement ID 24.
+- Updated after both installers were publicly available: 2026-09-05T10:31:53.720674+08:00.
+- Live announcement ID 25, GPT-6 已上线: replaced the old restart-only guidance with instructions to use the latest switcher when models cannot be obtained, then restart Codex. Included the verified Windows/macOS download entries and noted that old users need not delete configuration or chat history.
+- Updated through the existing admin announcement API using a content-only request. Read-back verified the exact content and preserved title, active/popup status, targeting, scheduling and creation metadata. Unrelated announcement ID 24 and existing read markers were not changed.
+- The original announcement was backed up on the production server before writing: announcement-25-before-switcher-v3.2.1-20260905T023153Z.json. No credentials were written into the backup or this manifest.
+- Final content UTF-8 SHA-256: 9a848b1bcbbc45b40854eb1f0838fb19f850126de0a5b96f65e63902b0d799a2.
 - The Sub2 development baseline check detected pre-existing CI worktree changes; preserve those changes and do not build or deploy Sub2 for this content update.
