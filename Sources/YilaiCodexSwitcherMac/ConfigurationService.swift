@@ -24,6 +24,7 @@ struct CodexPaths {
   let backup: URL
   let manifest: URL
   let backupConfig: URL
+  let modelCatalog: URL
 
   init(codex: URL) {
     self.codex = codex
@@ -33,6 +34,7 @@ struct CodexPaths {
     backup = codex.appendingPathComponent("yilai-switcher-backup", isDirectory: true)
     manifest = backup.appendingPathComponent("manifest.json")
     backupConfig = backup.appendingPathComponent("config.toml")
+    modelCatalog = codex.appendingPathComponent("yilai-model-catalog.json")
   }
 }
 
@@ -97,10 +99,16 @@ final class CodexConfigurationService {
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
     let backupAlreadyExisted = exists(paths.manifest)
     let manifest = try ensureBackup()
+    let previousConfig = exists(paths.config) ? try read(paths.config) : nil
+    let previousCatalog = exists(paths.modelCatalog) ? try read(paths.modelCatalog) : nil
     var authMoves: [(from: URL, to: URL)] = []
+    var catalogWritten = false
+    var configWritten = false
     do {
-      let existing = exists(paths.config) ? try read(paths.config) : ""
-      try writeAtomic(buildYilaiConfig(existing: existing, key: key), to: paths.config)
+      try writeAtomic(YilaiModelCatalog.json, to: paths.modelCatalog)
+      catalogWritten = true
+      try writeAtomic(buildYilaiConfig(existing: previousConfig ?? "", key: key), to: paths.config)
+      configWritten = true
 
       // A disabled auth without our manifest is residue from an interrupted older run.
       // Preserve it, then make the current auth the authoritative restore point.
@@ -134,7 +142,14 @@ final class CodexConfigurationService {
       for move in authMoves.reversed() where !exists(move.from) && exists(move.to) {
         try? files.moveItem(at: move.to, to: move.from)
       }
-      try? restoreConfig(manifest)
+      if configWritten {
+        if let previousConfig { try? writeAtomic(previousConfig, to: paths.config) }
+        else { try? files.removeItem(at: paths.config) }
+      }
+      if catalogWritten {
+        if let previousCatalog { try? writeAtomic(previousCatalog, to: paths.modelCatalog) }
+        else { try? files.removeItem(at: paths.modelCatalog) }
+      }
       throw error
     }
   }
@@ -218,6 +233,8 @@ final class CodexConfigurationService {
     removeManagedProvider(from: &lines)
     setTopLevel("model_provider", value: "\"yilai\"", in: &lines)
     setTopLevel("model", value: "\"gpt-5.6-sol\"", in: &lines)
+    removeTopLevel("model_catalog_json", from: &lines)
+    setTopLevel("model_catalog_json", value: "\"\(escapeToml(paths.modelCatalog.path))\"", in: &lines)
     // macOS users may keep ChatGPT OAuth in Keychain. Force file-only auth lookup while
     // the auth.json file is disabled so a cached Free account cannot hide image generation.
     setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
@@ -244,6 +261,7 @@ final class CodexConfigurationService {
     var lines = splitLines(existing)
     removeAllModelProviders(from: &lines)
     removeTopLevel("model_provider", from: &lines)
+    removeTopLevel("model_catalog_json", from: &lines)
     setTopLevel("model", value: "\"gpt-5.6-terra\"", in: &lines)
     while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
       lines.removeLast()
@@ -263,6 +281,9 @@ final class CodexConfigurationService {
     guard settingValue("model", in: topLevel) == "\"gpt-5.6-sol\"" else {
       throw SwitcherError.message("写入后校验失败：未找到 gpt-5.6-sol 模型")
     }
+    guard settingValue("model_catalog_json", in: topLevel) == "\"\(escapeToml(paths.modelCatalog.path))\"",
+      try read(paths.modelCatalog) == YilaiModelCatalog.json
+    else { throw SwitcherError.message("写入后校验失败：固定模型目录未生效") }
     guard settingValue("cli_auth_credentials_store", in: topLevel) == "\"file\"" else {
       throw SwitcherError.message("写入后校验失败：未切换到纯 API 登录存储")
     }
@@ -442,6 +463,11 @@ final class CodexConfigurationService {
 }
 
 func runSelfTest() throws {
+  let catalog = try JSONSerialization.jsonObject(with: Data(YilaiModelCatalog.json.utf8)) as? [String: Any]
+  guard let models = catalog?["models"] as? [[String: Any]],
+    models.compactMap({ $0["slug"] as? String }) == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
+    models.allSatisfy({ ($0["visibility"] as? String) == "list" && ($0["supported_in_api"] as? Bool) == true })
+  else { throw SwitcherError.message("自测失败：内嵌模型目录必须恰好包含三个可见模型") }
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(
     "YilaiCodexSwitcher-swift-\(UUID().uuidString)", isDirectory: true)
   defer { try? FileManager.default.removeItem(at: root) }
@@ -461,6 +487,8 @@ func runSelfTest() throws {
   let switched = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
   guard switched.contains("model_provider = \"yilai\""),
     switched.contains("model = \"gpt-5.6-sol\""),
+    switched.contains("model_catalog_json = "),
+    try String(contentsOf: root.appendingPathComponent("yilai-model-catalog.json"), encoding: .utf8) == YilaiModelCatalog.json,
     switched.contains("cli_auth_credentials_store = \"file\""),
     switched.contains("image_generation = true"),
     switched.contains("requires_openai_auth = false"),
@@ -487,6 +515,7 @@ func runSelfTest() throws {
     official.contains("cli_auth_credentials_store = \"keyring\""),
     official.contains("image_generation = false"),
     !official.contains("model_provider"),
+    !official.contains("model_catalog_json"),
     !official.contains("[model_providers."),
     !official.contains("sk-new-key"),
     official.contains("[plugins.\"browser@openai-bundled\"]"),
@@ -535,4 +564,50 @@ func runSelfTest() throws {
   guard try directService.mode() == .official else {
     throw SwitcherError.message("自测失败：无备份时不能直接切换官方")
   }
+
+  let upgradeRoot = root.appendingPathComponent("old-user", isDirectory: true)
+  try FileManager.default.createDirectory(at: upgradeRoot, withIntermediateDirectories: true)
+  try originalConfig.data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("config.toml"))
+  try originalAuth.data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("auth.json"))
+  let upgradeService = CodexConfigurationService(codexDirectory: upgradeRoot)
+  try upgradeService.switchToYilai(key: "sk-old-key")
+  let manifestURL = upgradeRoot.appendingPathComponent("yilai-switcher-backup/manifest.json")
+  let originalManifest = try Data(contentsOf: manifestURL)
+  let oldConfig = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+    .components(separatedBy: .newlines).filter { !$0.hasPrefix("model_catalog_json") }.joined(separator: "\n")
+  try ("model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n" + oldConfig)
+    .data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("config.toml"))
+  try "old catalog containing luna".data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("yilai-model-catalog.json"))
+  try "old cache containing luna".data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("models_cache.json"))
+  try upgradeService.switchToYilai(key: "sk-upgraded-key")
+  let upgraded = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard upgraded.components(separatedBy: "model_catalog_json").count == 2,
+    !upgraded.contains("old-catalog.json"), upgraded.contains("sk-upgraded-key"),
+    try String(contentsOf: upgradeRoot.appendingPathComponent("yilai-model-catalog.json"), encoding: .utf8) == YilaiModelCatalog.json,
+    try Data(contentsOf: manifestURL) == originalManifest,
+    try String(contentsOf: upgradeRoot.appendingPathComponent("auth.json.yilai-disabled"), encoding: .utf8) == originalAuth,
+    try String(contentsOf: upgradeRoot.appendingPathComponent("models_cache.json"), encoding: .utf8) == "old cache containing luna"
+  else { throw SwitcherError.message("自测失败：旧用户目录覆盖与原备份保护") }
+  try upgradeService.switchToOfficial()
+  let upgradedOfficial = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
+  guard !upgradedOfficial.contains("model_catalog_json"),
+    try String(contentsOf: upgradeRoot.appendingPathComponent("auth.json"), encoding: .utf8) == originalAuth
+  else { throw SwitcherError.message("自测失败：旧用户升级后切回官方") }
+
+  let rollbackRoot = root.appendingPathComponent("catalog-rollback", isDirectory: true)
+  try FileManager.default.createDirectory(at: rollbackRoot, withIntermediateDirectories: true)
+  try originalAuth.data(using: .utf8)!.write(to: rollbackRoot.appendingPathComponent("auth.json"))
+  let rollbackService = CodexConfigurationService(codexDirectory: rollbackRoot)
+  try rollbackService.switchToYilai(key: "sk-before-failure")
+  let rollbackConfigURL = rollbackRoot.appendingPathComponent("config.toml")
+  let rollbackCatalogURL = rollbackRoot.appendingPathComponent("yilai-model-catalog.json")
+  let beforeFailure = try Data(contentsOf: rollbackConfigURL)
+  try "previous catalog".data(using: .utf8)!.write(to: rollbackCatalogURL)
+  try FileManager.default.removeItem(at: rollbackRoot.appendingPathComponent("auth.json.yilai-disabled"))
+  var failed = false
+  do { try rollbackService.switchToYilai(key: "sk-after-failure") }
+  catch { failed = true }
+  guard failed, try Data(contentsOf: rollbackConfigURL) == beforeFailure,
+    try String(contentsOf: rollbackCatalogURL, encoding: .utf8) == "previous catalog"
+  else { throw SwitcherError.message("自测失败：配置与模型目录失败回滚") }
 }
