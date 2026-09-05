@@ -1,5 +1,14 @@
 # 易来 Codex 切换器 Release Notes
 
+## v3.2.1（macOS 更新，Windows 保持 v3.2.0）
+
+- macOS 现在与 Windows 一样固定显示 Sol、Terra、GPT-6，旧用户使用新版重新配置即可覆盖旧的模型目录设置。
+- 保留官方登录备份、Keychain 隔离和原有设置；重复切换、失败回滚及切回官方解除目录限制均通过隔离自测。
+- 正式 macOS Actions 双架构构建、自测和 DMG 校验通过，界面截图已核对。
+- DMG SHA-256：`82C14BF8026698C09E6EA946084BCDAA036269B65BC051866C939FD6AA613015`。
+- ZIP SHA-256：`68B53BFF9BD2FE4122F7F847055EF79BAA53B9C344AA69CDF2C5675B0EF64781`。
+- Windows EXE 沿用 v3.2.0，未重复构建；完整记录见 [RELEASE-MANIFEST](releases/v3.2.1/RELEASE-MANIFEST.md)。
+
 ## v3.2.0（仅升级 Windows）
 
 - Windows 写入专用 `model_catalog_json`，可见模型固定为 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`。

@@ -5,7 +5,7 @@
 ## 下载
 
 - Windows 10/11 x64：从 [Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 下载 v3.2.0 `YilaiCodexSwitcher.exe`，无需安装运行库。
-- macOS 13+：仍提供原 v3.1.1 `YilaiCodexSwitcher-macOS-universal.dmg`，同时支持 Intel 与 Apple Silicon；本次不升级 macOS。
+- macOS 13+：下载 v3.2.1 `YilaiCodexSwitcher-macOS-universal.dmg`，同时支持 Intel 与 Apple Silicon。
 
 当前 Windows 版本未进行代码签名，macOS 版本使用 ad-hoc 签名且未公证。首次打开若被系统拦截，请查看 Release 中的平台说明。
 
@@ -19,7 +19,7 @@
 
 需要切回官方时，完全退出 Codex，点击“切换回官方”，再重新打开。切换器会删除第三方 provider 选择和定义、保留插件等通用设置，并恢复受保护的 OpenAI 官方登录；不会恢复切换前可能存在的第三方配置。Codex 的 `model_provider` 默认值是内置 `openai`，见 [OpenAI Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
-## Windows v3.2.0
+## Windows v3.2.0 / macOS v3.2.1
 
 易来模式固定显示 Sol (`gpt-5.6-sol`)、Terra (`gpt-5.6-terra`) 和 6 (`gpt-6-astra`)。旧用户完全退出 Codex 与 CC-Switch，重新用新版点击“切换到易来 API”即可覆盖旧模型目录配置，无需删除 `.codex` 或先切回官方；原登录备份、插件、会话和旧缓存保留。重开 Codex 后生效，切回官方会解除目录限制。模型清单固定，不会自动跟随服务器后续增删。
 

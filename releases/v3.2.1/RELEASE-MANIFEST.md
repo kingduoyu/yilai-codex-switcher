@@ -16,11 +16,21 @@
 ## Build And Publication
 
 - Formal build: existing Build macOS app GitHub Actions workflow on macos-14, arm64 and x86_64 merged by lipo.
-- Status: awaiting the formal build, isolated self-test, DMG verification and UI screenshot. Do not publish before these checks pass.
+- Build commit: 69612b0ff2660d2241c786779c9c0e0dfcb773f4.
+- Actions run: 33938933352, success. Both architectures compiled; isolated self-test and hdiutil verification passed.
+- UI proof: implementation-macos.png, 960 x 650, visually checked as v3.2.1 with intact controls and no exposed key.
+- Status: formal artifacts accepted for publication; no additional build or repeat test suite.
 - Windows SHA-256 remains 55f6e3954185bbb391d11ff89c5810b15e24a1e7b0caafe1c819aba34ece692a; no Windows rebuild or repeat acceptance suite.
+
+| Asset | Version | SHA-256 |
+| --- | --- | --- |
+| YilaiCodexSwitcher.exe | Windows 3.2.0, unchanged | 55f6e3954185bbb391d11ff89c5810b15e24a1e7b0caafe1c819aba34ece692a |
+| YilaiCodexSwitcher-macOS-universal.dmg | macOS 3.2.1 | 82c14bf8026698c09e6ea946084bcdaa036269b65bc051866c939fd6aa613015 |
+| YilaiCodexSwitcher-macOS-universal.zip | macOS 3.2.1 | 68b53bff9bd2fe4122f7f847055ef79baa53b9c344aa69cdf2c5675b0ef64781 |
 
 ## Announcement
 
 - After both installers are available, update the relevant existing live announcement to direct users who cannot obtain models to reconfigure with the switcher, then restart Codex.
 - Preserve other announcement content and visibility settings. Record the selected announcement and final verification here after the update.
+- Selected live announcement: ID 25, GPT-6 已上线, active/popup, targeting all users, no schedule limit. Replace its old restart-only guidance, not unrelated announcement ID 24.
 - The Sub2 development baseline check detected pre-existing CI worktree changes; preserve those changes and do not build or deploy Sub2 for this content update.
