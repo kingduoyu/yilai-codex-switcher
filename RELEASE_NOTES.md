@@ -1,5 +1,15 @@
 # 易来 Codex 切换器 Release Notes
 
+## v3.2.0（仅升级 Windows）
+
+- Windows 写入专用 `model_catalog_json`，可见模型固定为 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`。
+- 老用户再次切换时覆盖旧模型目录路径与重复配置项，保留首次登录备份、插件、会话及旧缓存，不需要先切回官方。
+- 写入失败时回滚本次操作前的配置与模型目录；切回官方后解除目录限制。
+- Windows 在 Codex app-server 0.153.0 下通过真实 `model/list` 测试，含 Luna 的旧缓存不再影响可见列表。
+- 目录保留新模型的完整元数据；不兼容这些字段的旧 Codex 需先升级。macOS 本次不升级，附件沿用 v3.1.1 原 DMG/ZIP，保持原下载入口可用。
+- Windows EXE SHA-256：`55F6E3954185BBB391D11FF89C5810B15E24A1E7B0CAAFE1C819ABA34ECE692A`。
+- 发布范围和既有验收记录见 [RELEASE-MANIFEST](releases/v3.2.0/RELEASE-MANIFEST.md)。
+
 ## v3.1.1
 
 - macOS 改用系统原生关闭与最小化按钮，移除会吞掉输入点击的全窗口拖动区域。

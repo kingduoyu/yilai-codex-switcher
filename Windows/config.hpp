@@ -18,6 +18,7 @@ struct CodexPaths {
     std::filesystem::path backup;
     std::filesystem::path manifest;
     std::filesystem::path backupConfig;
+    std::filesystem::path modelCatalog;
 };
 
 CodexPaths currentPaths();

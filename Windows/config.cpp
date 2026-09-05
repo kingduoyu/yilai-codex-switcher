@@ -1,4 +1,5 @@
 #include "config.hpp"
+#include "model_catalog.hpp"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -199,12 +200,14 @@ std::string escapeToml(std::string value) {
     return result;
 }
 
-std::string buildYilaiConfig(const std::string& existing, const std::string& key) {
+std::string buildYilaiConfig(const std::string& existing, const std::string& key, const fs::path& catalog) {
     const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
     auto lines = splitLines(existing);
     removeManagedProvider(lines);
     setTopLevel(lines, "model_provider", "\"yilai\"");
     setTopLevel(lines, "model", "\"gpt-5.6-sol\"");
+    removeTopLevel(lines, "model_catalog_json");
+    setTopLevel(lines, "model_catalog_json", "\"" + escapeToml(wideToUtf8(catalog.wstring())) + "\"");
     while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
     if (!lines.empty()) lines.emplace_back();
     lines.emplace_back(kMarker);
@@ -230,6 +233,7 @@ std::string buildOfficialConfig(const std::string& existing) {
     auto lines = splitLines(existing);
     removeAllModelProviders(lines);
     removeTopLevel(lines, "model_provider");
+    removeTopLevel(lines, "model_catalog_json");
     setTopLevel(lines, "model", std::string("\"") + kOfficialModel + "\"");
     while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
 
@@ -292,7 +296,7 @@ void require(bool condition, const std::wstring& message) {
 CodexPaths pathsFor(const fs::path& codex) {
     const fs::path backup = codex / L"yilai-switcher-backup";
     return {codex, codex / L"config.toml", codex / L"auth.json", codex / L"auth.json.yilai-disabled",
-            backup, backup / L"manifest.json", backup / L"config.toml"};
+            backup, backup / L"manifest.json", backup / L"config.toml", codex / L"yilai-model-catalog.json"};
 }
 
 CodexPaths currentPaths() {
@@ -330,11 +334,19 @@ void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
     fs::create_directories(paths.codex, error);
     if (error) fail(L"无法创建 .codex 目录");
     const BackupManifest manifest = ensureBackup(paths);
+    const bool configExisted = pathExists(paths.config);
+    const std::string existing = configExisted ? readBytes(paths.config) : std::string();
+    const bool catalogExisted = pathExists(paths.modelCatalog);
+    const std::string previousCatalog = catalogExisted ? readBytes(paths.modelCatalog) : std::string();
 
     bool authRenamed = false;
+    bool catalogWritten = false;
+    bool configWritten = false;
     try {
-        const std::string existing = pathExists(paths.config) ? readBytes(paths.config) : std::string();
-        writeAtomic(paths.config, buildYilaiConfig(existing, wideToUtf8(keyWide)));
+        writeAtomic(paths.modelCatalog, kYilaiModelCatalog);
+        catalogWritten = true;
+        writeAtomic(paths.config, buildYilaiConfig(existing, wideToUtf8(keyWide), paths.modelCatalog));
+        configWritten = true;
         if (pathExists(paths.auth)) {
             if (pathExists(paths.disabledAuth)) fail(L"auth.json.yilai-disabled 已存在，为避免覆盖登录信息，未执行切换");
             fs::rename(paths.auth, paths.disabledAuth);
@@ -346,7 +358,18 @@ void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
         if (authRenamed && !pathExists(paths.auth) && pathExists(paths.disabledAuth)) {
             fs::rename(paths.disabledAuth, paths.auth, error);
         }
-        try { restoreConfig(paths, manifest); } catch (...) {}
+        try {
+            if (configWritten) {
+                if (configExisted) writeAtomic(paths.config, existing);
+                else fs::remove(paths.config, error);
+            }
+        } catch (...) {}
+        try {
+            if (catalogWritten) {
+                if (catalogExisted) writeAtomic(paths.modelCatalog, previousCatalog);
+                else fs::remove(paths.modelCatalog, error);
+            }
+        } catch (...) {}
         throw;
     }
 }
@@ -408,6 +431,9 @@ bool runSelfTest(std::wstring& error) {
         require(yilai.find("requires_openai_auth = false") != std::string::npos, L"自测失败：认证设置");
         require(yilai.find("local-image-extension") != std::string::npos, L"自测失败：生图请求头");
         require(yilai.find("sk-test-key") != std::string::npos, L"自测失败：API Key");
+        require(yilai.find("model_catalog_json = \"" + escapeToml(wideToUtf8(paths.modelCatalog.wstring())) + "\"") != std::string::npos,
+                L"自测失败：模型目录路径");
+        require(readBytes(paths.modelCatalog) == kYilaiModelCatalog, L"自测失败：固定模型目录");
         require(yilai.find("[plugins.\"browser@openai-bundled\"]") != std::string::npos, L"自测失败：插件配置保留");
         require(!pathExists(paths.auth) && pathExists(paths.disabledAuth), L"自测失败：登录停用");
         switchToYilai(L"sk-new-key", paths);
@@ -417,6 +443,7 @@ bool runSelfTest(std::wstring& error) {
         require(getMode(paths) == CodexMode::Official, L"自测失败：官方模式识别");
         require(official.find("model = \"gpt-5.6-terra\"") != std::string::npos, L"自测失败：官方模型");
         require(official.find("model_provider") == std::string::npos, L"自测失败：第三方 provider 仍被选中");
+        require(official.find("model_catalog_json") == std::string::npos, L"自测失败：官方模式仍限制模型目录");
         require(official.find("[model_providers.") == std::string::npos, L"自测失败：第三方 provider 定义未清理");
         require(official.find("sk-new-key") == std::string::npos, L"自测失败：易来 Key 未清理");
         require(official.find("[plugins.\"browser@openai-bundled\"]") != std::string::npos, L"自测失败：官方切换未保留通用配置");
@@ -438,6 +465,45 @@ bool runSelfTest(std::wstring& error) {
         switchToOfficial(directPaths);
         require(getMode(directPaths) == CodexMode::Official,
                 L"自测失败：无备份时不能直接切换官方");
+
+        const auto conflictPaths = pathsFor(root / L"catalog rollback");
+        fs::create_directories(conflictPaths.codex);
+        writeAtomic(conflictPaths.config, originalConfig);
+        writeAtomic(conflictPaths.modelCatalog, "previous catalog");
+        writeAtomic(conflictPaths.auth, originalAuth);
+        writeAtomic(conflictPaths.disabledAuth, "protected auth");
+        bool failed = false;
+        try { switchToYilai(L"sk-test-conflict", conflictPaths); } catch (...) { failed = true; }
+        require(failed && readBytes(conflictPaths.config) == originalConfig &&
+                readBytes(conflictPaths.modelCatalog) == "previous catalog" &&
+                readBytes(conflictPaths.auth) == originalAuth,
+                L"自测失败：配置与模型目录失败回滚");
+
+        const auto upgradePaths = pathsFor(root / L"old-user");
+        fs::create_directories(upgradePaths.codex);
+        writeAtomic(upgradePaths.config, originalConfig);
+        writeAtomic(upgradePaths.auth, originalAuth);
+        switchToYilai(L"sk-old-key", upgradePaths);
+        const std::string originalManifest = readBytes(upgradePaths.manifest);
+        auto oldLines = splitLines(readBytes(upgradePaths.config));
+        removeTopLevel(oldLines, "model_catalog_json");
+        std::string oldConfig = "model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n";
+        for (const auto& line : oldLines) oldConfig += line + "\n";
+        writeAtomic(upgradePaths.config, oldConfig);
+        writeAtomic(upgradePaths.modelCatalog, "old catalog containing luna");
+        writeAtomic(upgradePaths.codex / L"models_cache.json", "old cache containing luna");
+        switchToYilai(L"sk-upgraded-key", upgradePaths);
+        const std::string upgraded = readBytes(upgradePaths.config);
+        const size_t catalogSetting = upgraded.find("model_catalog_json");
+        require(catalogSetting != std::string::npos && upgraded.find("model_catalog_json", catalogSetting + 1) == std::string::npos &&
+                upgraded.find("old-catalog.json") == std::string::npos && upgraded.find("sk-upgraded-key") != std::string::npos &&
+                readBytes(upgradePaths.modelCatalog) == kYilaiModelCatalog && readBytes(upgradePaths.manifest) == originalManifest &&
+                readBytes(upgradePaths.disabledAuth) == originalAuth &&
+                readBytes(upgradePaths.codex / L"models_cache.json") == "old cache containing luna",
+                L"自测失败：旧用户目录覆盖与原备份保护");
+        switchToOfficial(upgradePaths);
+        require(readBytes(upgradePaths.config).find("model_catalog_json") == std::string::npos &&
+                readBytes(upgradePaths.auth) == originalAuth, L"自测失败：旧用户升级后切回官方");
         return true;
     } catch (const std::exception& exception) {
         error = errorText(exception);

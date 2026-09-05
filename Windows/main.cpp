@@ -436,7 +436,7 @@ private:
         const UINT32 footerColor = messageError_ ? 0xB3263E : (messageSuccess_ ? 0x0D7F57 : 0x40566F);
         drawIcon(L"\xE83D", layout_.rect(56, 578, 32, 34), color(footerColor));
         drawText(message_.c_str(), layout_.rect(92, 572, 600, 46), body_, color(footerColor));
-        drawText(L"Windows 10/11  ·  v3.1.0", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
+        drawText(L"Windows 10/11  ·  v3.2.0", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
 
         const HRESULT result = target_->EndDraw();
         if (result == D2DERR_RECREATE_TARGET) {
