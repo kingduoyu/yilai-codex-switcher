@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum CodexMode {
   case notConfigured
@@ -38,17 +39,7 @@ struct CodexPaths {
   }
 }
 
-private struct BackupManifest: Codable {
-  let configExisted: Bool
-  let authExisted: Bool
-  let createdAtUtc: String
 
-  enum CodingKeys: String, CodingKey {
-    case configExisted = "ConfigExisted"
-    case authExisted = "AuthExisted"
-    case createdAtUtc = "CreatedAtUtc"
-  }
-}
 
 enum SwitcherError: LocalizedError {
   case message(String)
@@ -97,133 +88,71 @@ final class CodexConfigurationService {
     }
 
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
-    let backupAlreadyExisted = exists(paths.manifest)
-    let manifest = try ensureBackup()
-    let previousConfig = exists(paths.config) ? try read(paths.config) : nil
-    let previousCatalog = exists(paths.modelCatalog) ? try read(paths.modelCatalog) : nil
-    var authMoves: [(from: URL, to: URL)] = []
-    var catalogWritten = false
-    var configWritten = false
-    do {
-      try writeAtomic(YilaiModelCatalog.json, to: paths.modelCatalog)
-      catalogWritten = true
-      try writeAtomic(buildYilaiConfig(existing: previousConfig ?? "", key: key), to: paths.config)
-      configWritten = true
-
-      // A disabled auth without our manifest is residue from an interrupted older run.
-      // Preserve it, then make the current auth the authoritative restore point.
-      if !backupAlreadyExisted && exists(paths.disabledAuth) {
-        let archive = nextAuthArchiveURL()
-        try files.moveItem(at: paths.disabledAuth, to: archive)
-        authMoves.append((paths.disabledAuth, archive))
-      }
-
-      if exists(paths.auth) {
-        if exists(paths.disabledAuth) {
-          let archive = nextAuthArchiveURL()
-          try files.moveItem(at: paths.auth, to: archive)
-          authMoves.append((paths.auth, archive))
-        } else {
-          try files.moveItem(at: paths.auth, to: paths.disabledAuth)
-          authMoves.append((paths.auth, paths.disabledAuth))
-        }
-      } else if manifest.authExisted && !exists(paths.disabledAuth) {
-        throw SwitcherError.message("原有 auth.json 及其停用文件均不存在，未执行切换")
-      }
-
-      try verifyYilaiConfiguration(expectedKey: key)
-      guard !exists(paths.auth) else {
-        throw SwitcherError.message("写入后校验失败：auth.json 仍在生效，请完全退出 Codex 后重试")
-      }
-      if manifest.authExisted && !exists(paths.disabledAuth) {
-        throw SwitcherError.message("写入后校验失败：原有官方登录未安全停用")
-      }
-    } catch {
-      for move in authMoves.reversed() where !exists(move.from) && exists(move.to) {
-        try? files.moveItem(at: move.to, to: move.from)
-      }
-      if configWritten {
-        if let previousConfig { try? writeAtomic(previousConfig, to: paths.config) }
-        else { try? files.removeItem(at: paths.config) }
-      }
-      if catalogWritten {
-        if let previousCatalog { try? writeAtomic(previousCatalog, to: paths.modelCatalog) }
-        else { try? files.removeItem(at: paths.modelCatalog) }
-      }
-      throw error
-    }
+    let existing = exists(paths.config) ? try read(paths.config) : ""
+    try applyConfiguration(buildYilaiConfig(existing: existing, key: key), expectedKey: key)
   }
 
   func switchToOfficial() throws {
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
-    let manifest = exists(paths.manifest) ? try readManifest() : nil
-    var archivedActiveAuth: URL?
-    if manifest?.authExisted == true {
-      guard exists(paths.disabledAuth) else {
-        throw SwitcherError.message("找不到 auth.json.yilai-disabled，无法恢复原有登录")
-      }
-      if exists(paths.auth) {
-        let archive = nextAuthArchiveURL()
-        try files.moveItem(at: paths.auth, to: archive)
-        archivedActiveAuth = archive
-      }
-    }
+    let existing = exists(paths.config) ? try read(paths.config) : ""
+    try applyConfiguration(buildOfficialConfig(existing: existing), expectedKey: nil)
+  }
 
-    let previousConfig = exists(paths.config) ? try read(paths.config) : nil
-    var baseConfig = previousConfig ?? ""
-    if manifest?.configExisted == true, exists(paths.backupConfig) {
-      baseConfig = try read(paths.backupConfig)
+  private func applyConfiguration(_ config: String, expectedKey: String?) throws {
+    struct Snapshot {
+      let url: URL
+      let data: Data?
     }
-
+    // Keep rollback data only in memory; never create persistent login backups.
+    var targets = [paths.config, paths.modelCatalog, paths.auth, paths.disabledAuth,
+                   paths.manifest, paths.backupConfig]
+    let archives = try files.contentsOfDirectory(at: paths.codex, includingPropertiesForKeys: nil)
+      .filter { $0.lastPathComponent.hasPrefix("auth.json.yilai-session-") }
+    targets.append(contentsOf: archives)
+    let snapshots = try targets.map { url -> Snapshot in
+      if exists(url) {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+          throw SwitcherError.message("预期为普通文件：\(url.path)")
+        }
+        return Snapshot(url: url, data: try Data(contentsOf: url))
+      }
+      return Snapshot(url: url, data: nil)
+    }
+    var changed: [Int] = []
     do {
-      try writeAtomic(buildOfficialConfig(existing: baseConfig), to: paths.config)
-      if manifest?.authExisted == true {
-        try files.moveItem(at: paths.disabledAuth, to: paths.auth)
+      try writeAtomic(config, to: paths.config)
+      changed.append(0)
+      if expectedKey != nil {
+        try writeAtomic(YilaiModelCatalog.json, to: paths.modelCatalog)
+        changed.append(1)
+      }
+      for index in 2..<targets.count where exists(targets[index]) {
+        try files.removeItem(at: targets[index])
+        changed.append(index)
+      }
+      if let expectedKey { try verifyYilaiConfiguration(expectedKey: expectedKey) }
+      guard !exists(paths.auth), !exists(paths.disabledAuth) else {
+        throw SwitcherError.message("认证文件被重新创建，请完全退出 Codex 和 CC-Switch 后重试")
       }
     } catch {
-      if let archive = archivedActiveAuth, !exists(paths.auth), exists(archive) {
-        try? files.moveItem(at: archive, to: paths.auth)
+      let originalError = error
+      var rollbackFailed = false
+      for index in changed.reversed() {
+        let snapshot = snapshots[index]
+        do {
+          if let data = snapshot.data { try writeAtomic(data, to: snapshot.url) }
+          else if exists(snapshot.url) { try files.removeItem(at: snapshot.url) }
+        } catch { rollbackFailed = true }
       }
-      if let previousConfig {
-        try? writeAtomic(previousConfig, to: paths.config)
-      } else if exists(paths.config) {
-        try? files.removeItem(at: paths.config)
+      if rollbackFailed {
+        throw SwitcherError.message("切换失败且回滚不完整，请检查文件权限后重试")
       }
-      throw error
+      throw originalError
     }
-
-    if exists(paths.backup) { try? files.removeItem(at: paths.backup) }
-  }
-
-  private func ensureBackup() throws -> BackupManifest {
-    if exists(paths.manifest) { return try readManifest() }
-    try files.createDirectory(at: paths.backup, withIntermediateDirectories: true)
-    let manifest = BackupManifest(
-      configExisted: exists(paths.config),
-      authExisted: exists(paths.auth),
-      createdAtUtc: ISO8601DateFormatter().string(from: Date())
-    )
-    if manifest.configExisted { try writeAtomic(try read(paths.config), to: paths.backupConfig) }
-    let encoder = JSONEncoder()
-    try writeAtomic(encoder.encode(manifest), to: paths.manifest)
-    return manifest
-  }
-
-  private func readManifest() throws -> BackupManifest {
-    guard exists(paths.manifest) else {
-      throw SwitcherError.message("没有找到可恢复的原有配置。请先使用“切换到易来 API”")
-    }
-    do {
-      return try JSONDecoder().decode(BackupManifest.self, from: Data(contentsOf: paths.manifest))
-    } catch { throw SwitcherError.message("备份信息无效") }
-  }
-
-  private func restoreConfig(_ manifest: BackupManifest) throws {
-    if manifest.configExisted {
-      guard exists(paths.backupConfig) else { throw SwitcherError.message("config.toml 备份文件缺失") }
-      try writeAtomic(try read(paths.backupConfig), to: paths.config)
-    } else if exists(paths.config) {
-      try files.removeItem(at: paths.config)
+    // Do not recursively delete unknown files in the legacy backup directory.
+    if let contents = try? files.contentsOfDirectory(atPath: paths.backup.path), contents.isEmpty {
+      try? files.removeItem(at: paths.backup)
     }
   }
 
@@ -235,8 +164,7 @@ final class CodexConfigurationService {
     setTopLevel("model", value: "\"gpt-5.6-sol\"", in: &lines)
     removeTopLevel("model_catalog_json", from: &lines)
     setTopLevel("model_catalog_json", value: "\"\(escapeToml(paths.modelCatalog.path))\"", in: &lines)
-    // macOS users may keep ChatGPT OAuth in Keychain. Force file-only auth lookup while
-    // the auth.json file is disabled so a cached Free account cannot hide image generation.
+    // Use file-only auth so existing Keychain accounts do not remain active.
     setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
     setTableSetting("features", key: "image_generation", value: "true", in: &lines)
     while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
@@ -260,6 +188,7 @@ final class CodexConfigurationService {
     let newline = existing.contains("\r\n") ? "\r\n" : "\n"
     var lines = splitLines(existing)
     removeAllModelProviders(from: &lines)
+    setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
     removeTopLevel("model_provider", from: &lines)
     removeTopLevel("model_catalog_json", from: &lines)
     setTopLevel("model", value: "\"gpt-5.6-terra\"", in: &lines)
@@ -419,11 +348,7 @@ final class CodexConfigurationService {
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func nextAuthArchiveURL() -> URL {
-    paths.codex.appendingPathComponent(
-      "auth.json.yilai-session-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-"))-\(UUID().uuidString.prefix(8))"
-    )
-  }
+
 
   private func escapeToml(_ value: String) -> String {
     value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
@@ -503,25 +428,26 @@ func runSelfTest() throws {
   let archivedAuths = try FileManager.default.contentsOfDirectory(
     at: root, includingPropertiesForKeys: nil
   ).filter { $0.lastPathComponent.hasPrefix("auth.json.yilai-session-") }
-  guard archivedAuths.count == 1, !FileManager.default.fileExists(
+  guard archivedAuths.isEmpty, !FileManager.default.fileExists(
     atPath: root.appendingPathComponent("auth.json").path)
   else {
-    throw SwitcherError.message("自测失败：重复切换登录保护")
+    throw SwitcherError.message("自测失败：重复切换不应备份登录")
   }
   try service.switchToOfficial()
   let official = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
   guard try service.mode() == .official,
     official.contains("model = \"gpt-5.6-terra\""),
-    official.contains("cli_auth_credentials_store = \"keyring\""),
-    official.contains("image_generation = false"),
+    official.contains("cli_auth_credentials_store = \"file\""),
+    official.contains("image_generation = true"),
     !official.contains("model_provider"),
     !official.contains("model_catalog_json"),
     !official.contains("[model_providers."),
     !official.contains("sk-new-key"),
     official.contains("[plugins.\"browser@openai-bundled\"]"),
-    try String(contentsOf: root.appendingPathComponent("auth.json"), encoding: .utf8)
-      == originalAuth
-  else { throw SwitcherError.message("自测失败：官方配置和原凭据存储未恢复") }
+    !FileManager.default.fileExists(atPath: root.appendingPathComponent("auth.json").path),
+    !FileManager.default.fileExists(atPath: root.appendingPathComponent("auth.json.yilai-disabled").path),
+    !FileManager.default.fileExists(atPath: root.appendingPathComponent("yilai-switcher-backup").path)
+  else { throw SwitcherError.message("自测失败：官方配置应保留当前设置并重新登录") }
 
   let newRoot = root.appendingPathComponent("new-user", isDirectory: true)
   let newService = CodexConfigurationService(codexDirectory: newRoot)
@@ -551,10 +477,10 @@ func runSelfTest() throws {
   try keyringOnlyService.switchToOfficial()
   let keyringOfficial = try String(
     contentsOf: keyringOnlyRoot.appendingPathComponent("config.toml"), encoding: .utf8)
-  guard keyringOfficial.contains("cli_auth_credentials_store = \"keyring\""),
+  guard keyringOfficial.contains("cli_auth_credentials_store = \"file\""),
     keyringOfficial.contains("model = \"gpt-5.6-terra\""),
     keyringOfficial.contains("[plugins.\"browser@openai-bundled\"]")
-  else { throw SwitcherError.message("自测失败：Keychain 官方登录设置未恢复") }
+  else { throw SwitcherError.message("自测失败：官方不应恢复旧 Keychain 登录设置") }
 
   let directRoot = root.appendingPathComponent("direct-official", isDirectory: true)
   try FileManager.default.createDirectory(at: directRoot, withIntermediateDirectories: true)
@@ -572,7 +498,10 @@ func runSelfTest() throws {
   let upgradeService = CodexConfigurationService(codexDirectory: upgradeRoot)
   try upgradeService.switchToYilai(key: "sk-old-key")
   let manifestURL = upgradeRoot.appendingPathComponent("yilai-switcher-backup/manifest.json")
-  let originalManifest = try Data(contentsOf: manifestURL)
+  try FileManager.default.createDirectory(at: manifestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+  try Data("invalid old manifest".utf8).write(to: manifestURL)
+  try Data(originalConfig.utf8).write(to: upgradeRoot.appendingPathComponent("yilai-switcher-backup/config.toml"))
+  try Data(originalAuth.utf8).write(to: upgradeRoot.appendingPathComponent("auth.json.yilai-disabled"))
   let oldConfig = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
     .components(separatedBy: .newlines).filter { !$0.hasPrefix("model_catalog_json") }.joined(separator: "\n")
   try ("model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n" + oldConfig)
@@ -584,30 +513,66 @@ func runSelfTest() throws {
   guard upgraded.components(separatedBy: "model_catalog_json").count == 2,
     !upgraded.contains("old-catalog.json"), upgraded.contains("sk-upgraded-key"),
     try String(contentsOf: upgradeRoot.appendingPathComponent("yilai-model-catalog.json"), encoding: .utf8) == YilaiModelCatalog.json,
-    try Data(contentsOf: manifestURL) == originalManifest,
-    try String(contentsOf: upgradeRoot.appendingPathComponent("auth.json.yilai-disabled"), encoding: .utf8) == originalAuth,
+    !FileManager.default.fileExists(atPath: manifestURL.path),
+    !FileManager.default.fileExists(atPath: upgradeRoot.appendingPathComponent("auth.json.yilai-disabled").path),
     try String(contentsOf: upgradeRoot.appendingPathComponent("models_cache.json"), encoding: .utf8) == "old cache containing luna"
-  else { throw SwitcherError.message("自测失败：旧用户目录覆盖与原备份保护") }
+  else { throw SwitcherError.message("自测失败：旧用户目录覆盖与旧备份清理") }
   try upgradeService.switchToOfficial()
   let upgradedOfficial = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
   guard !upgradedOfficial.contains("model_catalog_json"),
-    try String(contentsOf: upgradeRoot.appendingPathComponent("auth.json"), encoding: .utf8) == originalAuth
+    !FileManager.default.fileExists(atPath: upgradeRoot.appendingPathComponent("auth.json").path)
   else { throw SwitcherError.message("自测失败：旧用户升级后切回官方") }
+
+  for officialMode in [false, true] {
+    let conflictRoot = root.appendingPathComponent(officialMode ? "conflict-official" : "conflict-yilai")
+    let conflictPaths = CodexPaths(codex: conflictRoot)
+    try FileManager.default.createDirectory(at: conflictPaths.backup, withIntermediateDirectories: true)
+    try Data(originalConfig.utf8).write(to: conflictPaths.config)
+    try Data(originalAuth.utf8).write(to: conflictPaths.auth)
+    try Data("old auth".utf8).write(to: conflictPaths.disabledAuth)
+    try Data("invalid manifest".utf8).write(to: conflictPaths.manifest)
+    try Data("obsolete settings".utf8).write(to: conflictPaths.backupConfig)
+    let archive = conflictRoot.appendingPathComponent("auth.json.yilai-session-test")
+    try Data("old archived auth".utf8).write(to: archive)
+    let unrelated = conflictPaths.backup.appendingPathComponent("unrelated.txt")
+    try Data("keep".utf8).write(to: unrelated)
+    let conflictService = CodexConfigurationService(codexDirectory: conflictRoot)
+    if officialMode { try conflictService.switchToOfficial() }
+    else { try conflictService.switchToYilai(key: "sk-conflict") }
+    guard try conflictService.mode() == (officialMode ? .official : .yilai),
+      !FileManager.default.fileExists(atPath: conflictPaths.auth.path),
+      !FileManager.default.fileExists(atPath: conflictPaths.disabledAuth.path),
+      !FileManager.default.fileExists(atPath: conflictPaths.manifest.path),
+      !FileManager.default.fileExists(atPath: conflictPaths.backupConfig.path),
+      !FileManager.default.fileExists(atPath: archive.path),
+      try Data(contentsOf: unrelated) == Data("keep".utf8),
+      try String(contentsOf: conflictPaths.config, encoding: .utf8).contains("[plugins.")
+    else { throw SwitcherError.message("自测失败：旧备份冲突应清理且保留当前通用设置") }
+  }
 
   let rollbackRoot = root.appendingPathComponent("catalog-rollback", isDirectory: true)
   try FileManager.default.createDirectory(at: rollbackRoot, withIntermediateDirectories: true)
-  try originalAuth.data(using: .utf8)!.write(to: rollbackRoot.appendingPathComponent("auth.json"))
+  let rollbackPaths = CodexPaths(codex: rollbackRoot)
+  try Data(originalConfig.utf8).write(to: rollbackPaths.config)
+  try Data("previous catalog".utf8).write(to: rollbackPaths.modelCatalog)
+  try Data(originalAuth.utf8).write(to: rollbackPaths.auth)
+  try Data("locked old auth".utf8).write(to: rollbackPaths.disabledAuth)
+  // Deny deletion after the active auth was removed, exercising partial cleanup rollback.
+  guard chflags(rollbackPaths.disabledAuth.path, UInt32(UF_IMMUTABLE)) == 0 else {
+    throw SwitcherError.message("自测失败：无法锁定测试文件")
+  }
+  defer { _ = chflags(rollbackPaths.disabledAuth.path, 0) }
   let rollbackService = CodexConfigurationService(codexDirectory: rollbackRoot)
-  try rollbackService.switchToYilai(key: "sk-before-failure")
-  let rollbackConfigURL = rollbackRoot.appendingPathComponent("config.toml")
-  let rollbackCatalogURL = rollbackRoot.appendingPathComponent("yilai-model-catalog.json")
-  let beforeFailure = try Data(contentsOf: rollbackConfigURL)
-  try "previous catalog".data(using: .utf8)!.write(to: rollbackCatalogURL)
-  try FileManager.default.removeItem(at: rollbackRoot.appendingPathComponent("auth.json.yilai-disabled"))
-  var failed = false
-  do { try rollbackService.switchToYilai(key: "sk-after-failure") }
-  catch { failed = true }
-  guard failed, try Data(contentsOf: rollbackConfigURL) == beforeFailure,
-    try String(contentsOf: rollbackCatalogURL, encoding: .utf8) == "previous catalog"
-  else { throw SwitcherError.message("自测失败：配置与模型目录失败回滚") }
+  for officialMode in [false, true] {
+    var failed = false
+    do {
+      if officialMode { try rollbackService.switchToOfficial() }
+      else { try rollbackService.switchToYilai(key: "sk-after-failure") }
+    } catch { failed = true }
+    guard failed, try Data(contentsOf: rollbackPaths.config) == Data(originalConfig.utf8),
+      try Data(contentsOf: rollbackPaths.modelCatalog) == Data("previous catalog".utf8),
+      try Data(contentsOf: rollbackPaths.auth) == Data(originalAuth.utf8),
+      try Data(contentsOf: rollbackPaths.disabledAuth) == Data("locked old auth".utf8)
+    else { throw SwitcherError.message("自测失败：清理失败应回滚配置、目录与登录") }
+  }
 }

@@ -3,7 +3,7 @@ import Darwin
 import SwiftUI
 
 private let productName = "易来 Codex 切换器"
-private let productVersion = "3.2.1"
+private let productVersion = "3.2.2"
 
 struct SwitcherAlert: Identifiable {
   let id = UUID()
@@ -40,7 +40,7 @@ final class SwitcherModel: ObservableObject {
   func restore() {
     do {
       try service.switchToOfficial()
-      message = "已切换到 OpenAI 官方配置，请重新打开 Codex。"
+      message = "已切回官方，请重新打开 Codex 并登录。"
       messageIsError = false
       messageIsSuccess = true
       refreshMode()
@@ -63,7 +63,7 @@ final class SwitcherModel: ObservableObject {
     messageIsSuccess = false
     alert = SwitcherAlert(
       title: "配置未完成",
-      message: "\(error.localizedDescription)\n\nCodex 配置已恢复到操作前的状态，没有写入半成品配置。"
+      message: "\(error.localizedDescription)\n\n请完全退出 Codex 和 CC-Switch，并检查文件权限后重试。"
     )
   }
 }

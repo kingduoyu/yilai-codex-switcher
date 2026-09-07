@@ -436,7 +436,7 @@ private:
         const UINT32 footerColor = messageError_ ? 0xB3263E : (messageSuccess_ ? 0x0D7F57 : 0x40566F);
         drawIcon(L"\xE83D", layout_.rect(56, 578, 32, 34), color(footerColor));
         drawText(message_.c_str(), layout_.rect(92, 572, 600, 46), body_, color(footerColor));
-        drawText(L"Windows 10/11  ·  v3.2.0", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
+        drawText(L"Windows 10/11  ·  v3.2.2", layout_.rect(700, 572, 216, 46), small_, color(0x62778F), true);
 
         const HRESULT result = target_->EndDraw();
         if (result == D2DERR_RECREATE_TARGET) {
@@ -627,7 +627,7 @@ private:
         try {
             switchToOfficial(currentPaths());
             SetWindowTextW(edit_, L"");
-            setMessage(L"已切换到 OpenAI 官方配置，请重新打开 Codex。", true, false);
+            setMessage(L"已切回官方，请重新打开 Codex 并登录。", true, false);
             refreshMode();
         } catch (const std::exception& exception) {
             setMessage(exceptionText(exception), false, true);

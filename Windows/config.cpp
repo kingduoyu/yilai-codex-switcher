@@ -19,10 +19,7 @@ constexpr const char* kProviderId = "yilai";
 constexpr const char* kMarker = "# Managed by Yilai Codex Switcher";
 constexpr const char* kOfficialModel = "gpt-5.6-terra";
 
-struct BackupManifest {
-    bool configExisted = false;
-    bool authExisted = false;
-};
+
 
 std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) return {};
@@ -204,6 +201,7 @@ std::string buildYilaiConfig(const std::string& existing, const std::string& key
     const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
     auto lines = splitLines(existing);
     removeManagedProvider(lines);
+    setTopLevel(lines, "cli_auth_credentials_store", "\"file\"");
     setTopLevel(lines, "model_provider", "\"yilai\"");
     setTopLevel(lines, "model", "\"gpt-5.6-sol\"");
     removeTopLevel(lines, "model_catalog_json");
@@ -232,6 +230,7 @@ std::string buildOfficialConfig(const std::string& existing) {
     const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
     auto lines = splitLines(existing);
     removeAllModelProviders(lines);
+    setTopLevel(lines, "cli_auth_credentials_store", "\"file\"");
     removeTopLevel(lines, "model_provider");
     removeTopLevel(lines, "model_catalog_json");
     setTopLevel(lines, "model", std::string("\"") + kOfficialModel + "\"");
@@ -246,45 +245,47 @@ std::string buildOfficialConfig(const std::string& existing) {
     return output.str();
 }
 
-BackupManifest readManifest(const CodexPaths& paths) {
-    if (!pathExists(paths.manifest)) fail(L"没有找到可恢复的原有配置。请先使用“切换到易来 API”");
-    const std::string data = readBytes(paths.manifest);
-    auto parseBool = [&](const std::string& key) {
-        const size_t keyPos = data.find('"' + key + '"');
-        if (keyPos == std::string::npos) fail(L"备份信息无效");
-        const size_t colon = data.find(':', keyPos);
-        if (colon == std::string::npos) fail(L"备份信息无效");
-        const std::string tail = trim(data.substr(colon + 1));
-        if (tail.rfind("true", 0) == 0) return true;
-        if (tail.rfind("false", 0) == 0) return false;
-        fail(L"备份信息无效");
-    };
-    return {parseBool("ConfigExisted"), parseBool("AuthExisted")};
-}
-
-BackupManifest ensureBackup(const CodexPaths& paths) {
-    if (pathExists(paths.manifest)) return readManifest(paths);
-    std::error_code error;
-    fs::create_directories(paths.backup, error);
-    if (error) fail(L"无法创建备份目录");
-    BackupManifest manifest{pathExists(paths.config), pathExists(paths.auth)};
-    if (manifest.configExisted) writeAtomic(paths.backupConfig, readBytes(paths.config));
-    const std::string json = std::string("{\"ConfigExisted\":") + (manifest.configExisted ? "true" : "false") +
-        ",\"AuthExisted\":" + (manifest.authExisted ? "true" : "false") +
-        ",\"CreatedAtUtc\":\"native\"}";
-    writeAtomic(paths.manifest, json);
-    return manifest;
-}
-
-void restoreConfig(const CodexPaths& paths, const BackupManifest& manifest) {
-    std::error_code error;
-    if (manifest.configExisted) {
-        if (!pathExists(paths.backupConfig)) fail(L"config.toml 备份文件缺失");
-        writeAtomic(paths.config, readBytes(paths.backupConfig));
-    } else {
-        fs::remove(paths.config, error);
-        if (error) fail(L"无法恢复新用户的空白配置");
+void applyConfiguration(const CodexPaths& paths, const std::string& config, bool writeCatalog) {
+    struct Snapshot { fs::path path; bool existed; std::string bytes; };
+    std::vector<Snapshot> snapshots;
+    std::vector<size_t> changed;
+    // Rollback data exists only in memory, never in a persistent login backup.
+    const std::vector<fs::path> targets = {paths.config, paths.modelCatalog, paths.auth,
+                                         paths.disabledAuth, paths.manifest, paths.backupConfig};
+    for (const auto& target : targets) {
+        const bool existed = fs::exists(target);
+        if (existed && !fs::is_regular_file(target)) fail(L"预期为普通文件：" + target.wstring());
+        snapshots.push_back({target, existed, existed ? readBytes(target) : std::string()});
     }
+    changed.reserve(targets.size());
+    try {
+        writeAtomic(paths.config, config);
+        changed.push_back(0);
+        if (writeCatalog) {
+            writeAtomic(paths.modelCatalog, kYilaiModelCatalog);
+            changed.push_back(1);
+        }
+        for (size_t i = 2; i < targets.size(); ++i) {
+            if (fs::remove(targets[i])) changed.push_back(i);
+        }
+        if (fs::exists(paths.auth) || fs::exists(paths.disabledAuth)) {
+            fail(L"认证文件被重新创建，请完全退出 Codex 和 CC-Switch 后重试");
+        }
+    } catch (...) {
+        bool rollbackFailed = false;
+        for (auto it = changed.rbegin(); it != changed.rend(); ++it) {
+            const auto& snapshot = snapshots[*it];
+            try {
+                if (snapshot.existed) writeAtomic(snapshot.path, snapshot.bytes);
+                else fs::remove(snapshot.path);
+            } catch (...) { rollbackFailed = true; }
+        }
+        if (rollbackFailed) fail(L"切换失败且回滚不完整，请检查文件权限后重试");
+        throw;
+    }
+    // Remove only the empty legacy directory, never unrelated files inside it.
+    std::error_code ignored;
+    fs::remove(paths.backup, ignored);
 }
 
 void require(bool condition, const std::wstring& message) {
@@ -333,45 +334,8 @@ void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
     std::error_code error;
     fs::create_directories(paths.codex, error);
     if (error) fail(L"无法创建 .codex 目录");
-    const BackupManifest manifest = ensureBackup(paths);
-    const bool configExisted = pathExists(paths.config);
-    const std::string existing = configExisted ? readBytes(paths.config) : std::string();
-    const bool catalogExisted = pathExists(paths.modelCatalog);
-    const std::string previousCatalog = catalogExisted ? readBytes(paths.modelCatalog) : std::string();
-
-    bool authRenamed = false;
-    bool catalogWritten = false;
-    bool configWritten = false;
-    try {
-        writeAtomic(paths.modelCatalog, kYilaiModelCatalog);
-        catalogWritten = true;
-        writeAtomic(paths.config, buildYilaiConfig(existing, wideToUtf8(keyWide), paths.modelCatalog));
-        configWritten = true;
-        if (pathExists(paths.auth)) {
-            if (pathExists(paths.disabledAuth)) fail(L"auth.json.yilai-disabled 已存在，为避免覆盖登录信息，未执行切换");
-            fs::rename(paths.auth, paths.disabledAuth);
-            authRenamed = true;
-        } else if (manifest.authExisted && !pathExists(paths.disabledAuth)) {
-            fail(L"原有 auth.json 及其停用文件均不存在，未执行切换");
-        }
-    } catch (...) {
-        if (authRenamed && !pathExists(paths.auth) && pathExists(paths.disabledAuth)) {
-            fs::rename(paths.disabledAuth, paths.auth, error);
-        }
-        try {
-            if (configWritten) {
-                if (configExisted) writeAtomic(paths.config, existing);
-                else fs::remove(paths.config, error);
-            }
-        } catch (...) {}
-        try {
-            if (catalogWritten) {
-                if (catalogExisted) writeAtomic(paths.modelCatalog, previousCatalog);
-                else fs::remove(paths.modelCatalog, error);
-            }
-        } catch (...) {}
-        throw;
-    }
+    const std::string existing = pathExists(paths.config) ? readBytes(paths.config) : std::string();
+    applyConfiguration(paths, buildYilaiConfig(existing, wideToUtf8(keyWide), paths.modelCatalog), true);
 }
 
 void switchToOfficial(const CodexPaths& paths) {
@@ -379,37 +343,8 @@ void switchToOfficial(const CodexPaths& paths) {
     fs::create_directories(paths.codex, error);
     if (error) fail(L"无法创建 .codex 目录");
 
-    const bool hasManifest = pathExists(paths.manifest);
-    const BackupManifest manifest = hasManifest ? readManifest(paths) : BackupManifest{};
-    if (hasManifest && manifest.authExisted) {
-        if (!pathExists(paths.disabledAuth)) fail(L"找不到 auth.json.yilai-disabled，无法恢复原有登录");
-        if (pathExists(paths.auth)) fail(L"检测到新的 auth.json。为避免覆盖登录信息，请完全退出 Codex 后再重试");
-    }
-
-    const bool configExisted = pathExists(paths.config);
-    const std::string previousConfig = configExisted ? readBytes(paths.config) : std::string();
-    std::string baseConfig = previousConfig;
-    if (!configExisted && hasManifest && manifest.configExisted && pathExists(paths.backupConfig)) {
-        baseConfig = readBytes(paths.backupConfig);
-    }
-
-    bool authRestored = false;
-    try {
-        writeAtomic(paths.config, buildOfficialConfig(baseConfig));
-        if (hasManifest && manifest.authExisted) {
-            fs::rename(paths.disabledAuth, paths.auth);
-            authRestored = true;
-        }
-    } catch (...) {
-        if (authRestored && pathExists(paths.auth) && !pathExists(paths.disabledAuth)) {
-            fs::rename(paths.auth, paths.disabledAuth, error);
-        }
-        if (configExisted) writeAtomic(paths.config, previousConfig);
-        else fs::remove(paths.config, error);
-        throw;
-    }
-
-    if (pathExists(paths.backup)) fs::remove_all(paths.backup, error);
+    const std::string existing = pathExists(paths.config) ? readBytes(paths.config) : std::string();
+    applyConfiguration(paths, buildOfficialConfig(existing), false);
 }
 
 bool runSelfTest(std::wstring& error) {
@@ -435,7 +370,7 @@ bool runSelfTest(std::wstring& error) {
                 L"自测失败：模型目录路径");
         require(readBytes(paths.modelCatalog) == kYilaiModelCatalog, L"自测失败：固定模型目录");
         require(yilai.find("[plugins.\"browser@openai-bundled\"]") != std::string::npos, L"自测失败：插件配置保留");
-        require(!pathExists(paths.auth) && pathExists(paths.disabledAuth), L"自测失败：登录停用");
+        require(!pathExists(paths.auth) && !pathExists(paths.disabledAuth) && !pathExists(paths.backup), L"自测失败：不应保留登录备份");
         switchToYilai(L"sk-new-key", paths);
         require(readBytes(paths.config).find("sk-new-key") != std::string::npos, L"自测失败：重复切换");
         switchToOfficial(paths);
@@ -447,7 +382,7 @@ bool runSelfTest(std::wstring& error) {
         require(official.find("[model_providers.") == std::string::npos, L"自测失败：第三方 provider 定义未清理");
         require(official.find("sk-new-key") == std::string::npos, L"自测失败：易来 Key 未清理");
         require(official.find("[plugins.\"browser@openai-bundled\"]") != std::string::npos, L"自测失败：官方切换未保留通用配置");
-        require(readBytes(paths.auth) == originalAuth, L"自测失败：登录恢复");
+        require(!pathExists(paths.auth) && !pathExists(paths.disabledAuth), L"自测失败：官方应重新登录");
 
         const auto newPaths = pathsFor(root / L"new-user");
         switchToYilai(L"sk-new-user", newPaths);
@@ -466,25 +401,57 @@ bool runSelfTest(std::wstring& error) {
         require(getMode(directPaths) == CodexMode::Official,
                 L"自测失败：无备份时不能直接切换官方");
 
-        const auto conflictPaths = pathsFor(root / L"catalog rollback");
-        fs::create_directories(conflictPaths.codex);
-        writeAtomic(conflictPaths.config, originalConfig);
-        writeAtomic(conflictPaths.modelCatalog, "previous catalog");
-        writeAtomic(conflictPaths.auth, originalAuth);
-        writeAtomic(conflictPaths.disabledAuth, "protected auth");
-        bool failed = false;
-        try { switchToYilai(L"sk-test-conflict", conflictPaths); } catch (...) { failed = true; }
-        require(failed && readBytes(conflictPaths.config) == originalConfig &&
-                readBytes(conflictPaths.modelCatalog) == "previous catalog" &&
-                readBytes(conflictPaths.auth) == originalAuth,
-                L"自测失败：配置与模型目录失败回滚");
+        for (const bool officialMode : {false, true}) {
+            const auto conflictPaths = pathsFor(root / (officialMode ? L"conflict-official" : L"conflict-yilai"));
+            fs::create_directories(conflictPaths.codex);
+            writeAtomic(conflictPaths.config, originalConfig);
+            writeAtomic(conflictPaths.auth, originalAuth);
+            writeAtomic(conflictPaths.disabledAuth, "old auth");
+            writeAtomic(conflictPaths.manifest, "invalid legacy manifest");
+            writeAtomic(conflictPaths.backupConfig, originalConfig);
+            writeAtomic(conflictPaths.backup / L"unrelated.txt", "keep");
+            if (officialMode) switchToOfficial(conflictPaths);
+            else switchToYilai(L"sk-test-conflict", conflictPaths);
+            require(getMode(conflictPaths) == (officialMode ? CodexMode::Official : CodexMode::Yilai) &&
+                    !pathExists(conflictPaths.auth) && !pathExists(conflictPaths.disabledAuth) &&
+                    !pathExists(conflictPaths.manifest) && !pathExists(conflictPaths.backupConfig) &&
+                    readBytes(conflictPaths.backup / L"unrelated.txt") == "keep",
+                    L"自测失败：旧备份冲突清理");
+        }
+
+        const auto rollbackPaths = pathsFor(root / L"rollback");
+        fs::create_directories(rollbackPaths.codex);
+        writeAtomic(rollbackPaths.config, originalConfig);
+        writeAtomic(rollbackPaths.modelCatalog, "previous catalog");
+        writeAtomic(rollbackPaths.auth, originalAuth);
+        writeAtomic(rollbackPaths.disabledAuth, "locked old auth");
+        // Deny deletion of the second auth file after the first has been removed.
+        HANDLE locked = CreateFileW(rollbackPaths.disabledAuth.c_str(), GENERIC_READ,
+                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        require(locked != INVALID_HANDLE_VALUE, L"自测失败：无法锁定测试文件");
+        bool rollbackPassed = true;
+        for (const bool officialMode : {false, true}) {
+            bool failed = false;
+            try {
+                if (officialMode) switchToOfficial(rollbackPaths);
+                else switchToYilai(L"sk-after-failure", rollbackPaths);
+            } catch (...) { failed = true; }
+            rollbackPassed = rollbackPassed && failed && readBytes(rollbackPaths.config) == originalConfig &&
+                readBytes(rollbackPaths.modelCatalog) == "previous catalog" &&
+                readBytes(rollbackPaths.auth) == originalAuth &&
+                readBytes(rollbackPaths.disabledAuth) == "locked old auth";
+        }
+        CloseHandle(locked);
+        require(rollbackPassed, L"自测失败：文件清理失败应回滚配置、目录与登录");
 
         const auto upgradePaths = pathsFor(root / L"old-user");
         fs::create_directories(upgradePaths.codex);
         writeAtomic(upgradePaths.config, originalConfig);
         writeAtomic(upgradePaths.auth, originalAuth);
         switchToYilai(L"sk-old-key", upgradePaths);
-        const std::string originalManifest = readBytes(upgradePaths.manifest);
+        writeAtomic(upgradePaths.manifest, "{\"AuthExisted\":true}");
+        writeAtomic(upgradePaths.backupConfig, originalConfig);
+        writeAtomic(upgradePaths.disabledAuth, originalAuth);
         auto oldLines = splitLines(readBytes(upgradePaths.config));
         removeTopLevel(oldLines, "model_catalog_json");
         std::string oldConfig = "model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n";
@@ -497,13 +464,13 @@ bool runSelfTest(std::wstring& error) {
         const size_t catalogSetting = upgraded.find("model_catalog_json");
         require(catalogSetting != std::string::npos && upgraded.find("model_catalog_json", catalogSetting + 1) == std::string::npos &&
                 upgraded.find("old-catalog.json") == std::string::npos && upgraded.find("sk-upgraded-key") != std::string::npos &&
-                readBytes(upgradePaths.modelCatalog) == kYilaiModelCatalog && readBytes(upgradePaths.manifest) == originalManifest &&
-                readBytes(upgradePaths.disabledAuth) == originalAuth &&
+                readBytes(upgradePaths.modelCatalog) == kYilaiModelCatalog && !pathExists(upgradePaths.manifest) &&
+                !pathExists(upgradePaths.disabledAuth) &&
                 readBytes(upgradePaths.codex / L"models_cache.json") == "old cache containing luna",
-                L"自测失败：旧用户目录覆盖与原备份保护");
+                L"自测失败：旧用户目录覆盖与旧备份清理");
         switchToOfficial(upgradePaths);
         require(readBytes(upgradePaths.config).find("model_catalog_json") == std::string::npos &&
-                readBytes(upgradePaths.auth) == originalAuth, L"自测失败：旧用户升级后切回官方");
+                !pathExists(upgradePaths.auth), L"自测失败：旧用户升级后切回官方");
         return true;
     } catch (const std::exception& exception) {
         error = errorText(exception);

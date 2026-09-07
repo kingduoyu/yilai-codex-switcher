@@ -1,5 +1,14 @@
 # 易来 Codex 切换器 Release Notes
 
+## v3.2.2（Windows 与 macOS）
+
+- 不再保存或恢复登录备份，解决旧认证文件与备份清单冲突导致的切换失败。
+- 两个按钮均清理旧文件登录，切回官方后重新登录；保留当前插件、会话和无关设置。
+- macOS 同时清理旧版生成的 auth.json.yilai-session-* 登录归档；两个平台均使用 file 凭据存储，不修改系统凭据库。
+- 正常操作失败时使用内存快照回滚，不创建长期备份；操作前仍须完全退出 Codex 与 CC-Switch。
+- Windows 隔离自测通过；macOS 正式 Actions 构建与自测待完成。
+- 完整验证与制品校验值见 [RELEASE-MANIFEST](releases/v3.2.2/RELEASE-MANIFEST.md)。
+
 ## v3.2.1（macOS 更新，Windows 保持 v3.2.0）
 
 - macOS 现在与 Windows 一样固定显示 Sol、Terra、GPT-6，旧用户使用新版重新配置即可覆盖旧的模型目录设置。
