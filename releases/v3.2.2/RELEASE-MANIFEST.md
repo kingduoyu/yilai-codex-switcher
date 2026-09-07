@@ -1,6 +1,9 @@
 # v3.2.2 Windows / macOS 发布清单
 
-- 日期：2026-09-07。用户已授权发布；Windows 与 macOS 制品验证通过，待上传并公开 Release。
+- 日期：2026-09-07。已公开发布 v3.2.2 并确认是 latest。发布时间：2026-09-07 22:18:47（Asia/Shanghai）。
+- Release：https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.2.2
+- 发布标签提交：`f9f4080`（相对构建提交仅更新发布文档和校验文件）。
+- Windows EXE、Mac DMG/ZIP、SHA256SUMS.txt 均为 uploaded，GitHub 返回的 SHA-256 digest 与本地文件逐一一致。
 - 范围：Windows C++ 与 macOS Swift 配置服务、现有隔离自测、版本及切换提示；本地源码与公开仓库同步。macOS 额外清理旧版 auth.json.yilai-session-* 文件。
 - 行为：两个方向均删除 auth.json 与 auth.json.yilai-disabled，不再备份或恢复登录。清理旧 manifest.json、备份 config.toml；旧目录中其他文件保留。
 - 官方模式清理第三方 provider、Key、模型目录引用，保留其他配置。两个模式均使用 file 凭据存储，不修改系统凭据库。
