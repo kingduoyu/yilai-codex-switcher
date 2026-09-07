@@ -6,7 +6,10 @@
 - 两个按钮均清理旧文件登录，切回官方后重新登录；保留当前插件、会话和无关设置。
 - macOS 同时清理旧版生成的 auth.json.yilai-session-* 登录归档；两个平台均使用 file 凭据存储，不修改系统凭据库。
 - 正常操作失败时使用内存快照回滚，不创建长期备份；操作前仍须完全退出 Codex 与 CC-Switch。
-- Windows 隔离自测通过；macOS 正式 Actions 构建与自测待完成。
+- Windows 隔离自测通过；macOS 正式 Actions 双架构构建、隔离自测及 DMG 校验通过，v3.2.2 界面截图已核对。
+- Windows EXE SHA-256：`BFAF18F6A22230D0E75357DB572A0E9CB0823E531B126463B711B86E8B5025E1`。
+- macOS DMG SHA-256：`E3923DAF404447849AD2923E4D5B9627C19CCBE6D809A80DA166708D4D44CD37`。
+- macOS ZIP SHA-256：`184C6B24D7F0C062E682593FE554441F4A84F3447B301166597016EDB84BAB82`。
 - 完整验证与制品校验值见 [RELEASE-MANIFEST](releases/v3.2.2/RELEASE-MANIFEST.md)。
 
 ## v3.2.1（macOS 更新，Windows 保持 v3.2.0）
