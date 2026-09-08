@@ -1,7 +1,12 @@
 # v3.2.3 Windows / macOS Release Manifest
 
 - Date: 2026-09-08 (Asia/Shanghai).
-- Status: formal artifacts verified; ready for draft upload and publication verification.
+- Status: published as latest v3.2.3; draft=false verified through GitHub API.
+- Published at: 2026-09-08T01:35:22Z (2026-09-08 09:35:22 Asia/Shanghai).
+- Release: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.2.3
+- Tag target: aa14f4f26eb4de9872d764b6886e95c3dbd4f2cb.
+- All four assets verified uploaded with remote SHA-256 digests matching local files.
+- SHA256SUMS.txt SHA-256: 64BE33E7E5C471FB779320CAEC12387284895211EF6E032BF63783A071A3FB64.
 - Baseline public main: 2009168c00f46ae4882245dabcecdcd4f0bae829 (v3.2.2).
 - Implementation: 76230edddf75d4502125991214aa521d6a7ea305; candidate validation: 8fd8052.
 - Scope: structural config.toml rewrite shared by Windows and macOS; version and release metadata.
