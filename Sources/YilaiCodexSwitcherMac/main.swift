@@ -3,7 +3,7 @@ import Darwin
 import SwiftUI
 
 private let productName = "易来 Codex 切换器"
-private let productVersion = "3.2.2"
+private let productVersion = "3.2.3"
 
 struct SwitcherAlert: Identifiable {
   let id = UUID()
