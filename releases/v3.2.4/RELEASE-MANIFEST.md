@@ -1,7 +1,12 @@
 # v3.2.4 Windows / macOS Release Manifest
 
 - Date: 2026-09-08 (Asia/Shanghai).
-- Status: artifacts verified; ready for draft upload, not yet published.
+- Status: published as latest v3.2.4; draft=false verified through GitHub API.
+- Published at: 2026-09-08T02:23:24Z (2026-09-08 10:23:24 Asia/Shanghai).
+- Release: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.2.4
+- Tag target: a91c2623372b4d4e91d9cbbd997aaa2b55fe006c.
+- All four assets verified uploaded with remote SHA-256 digests matching local files.
+- SHA256SUMS.txt SHA-256: B226918797E087C81E597F6475C33D4885BBFE55714BDEA58D1B42F8F5749A1D.
 - Baseline: eae00b1 (published v3.2.3).
 - Build source: a22cf1c (v3.2.4).
 - Scope: recoverable cleanup of old credential and managed backup files; version metadata.
