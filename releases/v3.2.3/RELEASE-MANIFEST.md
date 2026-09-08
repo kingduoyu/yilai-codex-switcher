@@ -1,7 +1,7 @@
 # v3.2.3 Windows / macOS Release Manifest
 
 - Date: 2026-09-08 (Asia/Shanghai).
-- Status: preparing release; artifacts must be verified before publication.
+- Status: formal artifacts verified; ready for draft upload and publication verification.
 - Baseline public main: 2009168c00f46ae4882245dabcecdcd4f0bae829 (v3.2.2).
 - Implementation: 76230edddf75d4502125991214aa521d6a7ea305; candidate validation: 8fd8052.
 - Scope: structural config.toml rewrite shared by Windows and macOS; version and release metadata.
@@ -40,3 +40,16 @@
 - toml++ v3.4.0, MIT, original license retained in Sources/ConfigRewrite/vendor/toml.hpp.
 - Header SHA-256: 6B5172AD4DD6519AEC67B919181FA7A38A2234131E5B2AFA232DFE444819783E.
 - Existing Actions workflow/tool versions unchanged. Only necessary shared-source build wiring changed.
+
+## Formal Artifacts
+
+- Build source: ffb5dc2 (version changes only after the validated implementation).
+- Windows Release build and --self-test passed for v3.2.3.
+- Formal macOS Actions run: 34176864743, success, built from main.
+- Both architectures compiled, universal --self-test passed on Apple Silicon, ad-hoc codesign
+  completed, DMG hdiutil verify VALID, screenshot inspected with v3.2.3 label.
+- Downloaded DMG/ZIP hashes match the runner log. No live-account verification was added.
+- EXE SHA-256: 2EBF00D0128A81F14718F16C29E9233848F1EFAD88D145072E8D548FF1FD4D7B.
+- DMG SHA-256: 7C5B18583F041749C2AEA92F9B3DE9209DA96427DA5871A6DBDF628A17E21F36.
+- ZIP SHA-256: 72790A73562798C49A487C92439DD09E07AF7C8EC4F468C83339F1A5837CE1D2.
+- Local artifacts: 配置器/publish/release-v3.2.3/{win-x64,mac-universal}/.
