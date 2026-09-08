@@ -51,6 +51,13 @@ enum SwitcherError: LocalizedError {
   }
 }
 
+@discardableResult
+private func moveToTrash(_ url: URL) throws -> URL? {
+  var result: NSURL?
+  try FileManager.default.trashItem(at: url, resultingItemURL: &result)
+  return result as URL?
+}
+
 final class CodexConfigurationService {
   private let files = FileManager.default
   private let paths: CodexPaths
@@ -125,7 +132,7 @@ final class CodexConfigurationService {
         changed.append(1)
       }
       for index in 2..<targets.count where exists(targets[index]) {
-        try files.removeItem(at: targets[index])
+        try moveToTrash(targets[index])
         changed.append(index)
       }
       if let expectedKey { try verifyYilaiConfiguration(expectedKey: expectedKey) }
@@ -238,6 +245,21 @@ func runSelfTest() throws {
     "YilaiCodexSwitcher-swift-\(UUID().uuidString)", isDirectory: true)
   defer { try? FileManager.default.removeItem(at: root) }
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  // Verify retained bytes and collision handling through the production trash helper.
+  let trashProbe = root.appendingPathComponent("trash-proof-\(UUID().uuidString).json")
+  var recycled: [URL] = []
+  for value in ["first synthetic credential", "second synthetic credential"] {
+    let bytes = Data(value.utf8)
+    try bytes.write(to: trashProbe)
+    guard let destination = try moveToTrash(trashProbe),
+      !FileManager.default.fileExists(atPath: trashProbe.path),
+      try Data(contentsOf: destination) == bytes,
+      !recycled.contains(destination)
+    else { throw SwitcherError.message("自测失败：废纸篓必须保留文件内容及同名副本") }
+    recycled.append(destination)
+  }
+  guard try Data(contentsOf: recycled[0]) == Data("first synthetic credential".utf8)
+  else { throw SwitcherError.message("自测失败：废纸篓旧副本被覆盖") }
   let originalConfig =
     "model_provider = \"custom\"\r\nmodel = \"gpt-old\"\r\ncli_auth_credentials_store = \"keyring\"\r\n\r\n[features]\r\nimage_generation = false\r\n\r\n[model_providers.custom]\r\nname = \"Original\"\r\n\r\n[plugins.\"browser@openai-bundled\"]\r\nenabled = true\r\n"
   let originalAuth = "{\"auth_mode\":\"chatgpt\"}"

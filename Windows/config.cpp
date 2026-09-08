@@ -4,6 +4,8 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <chrono>
@@ -114,6 +116,27 @@ std::string buildConfig(const std::string& existing, const std::string& key,
     return output.get();
 }
 
+void recycleFile(const fs::path& path) {
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized)) fail(L"无法初始化回收站操作");
+    struct ComScope { ~ComScope() { CoUninitialize(); } } scope;
+    Microsoft::WRL::ComPtr<IFileOperation> operation;
+    Microsoft::WRL::ComPtr<IShellItem> item;
+    auto check = [&](HRESULT result) {
+        if (FAILED(result)) fail(L"无法移入回收站，已停止切换：" + path.wstring());
+    };
+    check(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER,
+                           IID_PPV_ARGS(operation.GetAddressOf())));
+    // Require recycling explicitly; never retry with a permanent-delete API.
+    check(operation->SetOperationFlags(FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOF_NO_UI));
+    check(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(item.GetAddressOf())));
+    check(operation->DeleteItem(item.Get(), nullptr));
+    check(operation->PerformOperations());
+    BOOL aborted = FALSE;
+    check(operation->GetAnyOperationsAborted(&aborted));
+    if (aborted || fs::exists(path)) fail(L"文件未移入回收站，已停止切换：" + path.wstring());
+}
+
 void applyConfiguration(const CodexPaths& paths, const std::string& config, bool writeCatalog) {
     struct Snapshot { fs::path path; bool existed; std::string bytes; };
     std::vector<Snapshot> snapshots;
@@ -135,7 +158,10 @@ void applyConfiguration(const CodexPaths& paths, const std::string& config, bool
             changed.push_back(1);
         }
         for (size_t i = 2; i < targets.size(); ++i) {
-            if (fs::remove(targets[i])) changed.push_back(i);
+            if (fs::exists(targets[i])) {
+                recycleFile(targets[i]);
+                changed.push_back(i);
+            }
         }
         if (fs::exists(paths.auth) || fs::exists(paths.disabledAuth)) {
             fail(L"认证文件被重新创建，请完全退出 Codex 和 CC-Switch 后重试");
