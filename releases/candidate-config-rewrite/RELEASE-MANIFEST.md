@@ -1,7 +1,7 @@
 # Config TOML Rewrite Candidate
 
 - Date: 2026-09-08, Asia/Shanghai.
-- Status: candidate branch prepared for macOS Actions validation; not a public release.
+- Status: candidate branch built and validated on macOS; not a public release.
 - Branch: candidate/config-rewrite-macos. Main and release downloads are unchanged.
 - Baseline: released v3.2.2. Public Windows executable is unchanged.
 - Scope: config.toml generation and configuration tests. No UI features, history migration,
@@ -42,7 +42,8 @@
 - No paid model turn or image-generation request was made; API requests are redirected to
   loopback in the integration test. This is configuration validation, not a live Key test.
 - Windows and macOS applyConfiguration blocks were compared with the released source and
-  are unchanged. macOS native build, signing and desktop login verification remain pending.
+  are unchanged. macOS native build, ad-hoc signing and isolated self-tests passed.
+  Real desktop login and live third-party model/image calls remain unverified.
 - Candidate Windows SHA-256: 4309E4FADF807B6AA73939136603A2864B21D57F3EB2B897809CC020273FE2E0
 - Baseline Windows SHA-256: BFAF18F6A22230D0E75357DB572A0E9CB0823E531B126463B711B86E8B5025E1
 
@@ -51,7 +52,24 @@
 - toml++ v3.4.0, MIT, original license included in vendor/toml.hpp.
 - Header verified byte-for-byte against marzer/tomlplusplus tag v3.4.0.
 - Header SHA-256: 6B5172AD4DD6519AEC67B919181FA7A38A2234131E5B2AFA232DFE444819783E.
-- Before any future release, synchronize the shared Sources/ConfigRewrite target,
-  Package.swift, platform adapters and tests to the public repository. Public Windows build
-  paths must refer to ../Sources/ConfigRewrite rather than the local sibling macOS project.
-- Do not distribute this candidate as a validated macOS release.
+- Candidate branch contains the shared Sources/ConfigRewrite target, Package.swift and
+  platform adapters. Windows build paths are adapted to ../Sources/ConfigRewrite.
+  Main and release downloads remain unchanged; do not describe this as a public release.
+
+## macOS Candidate Validation
+
+- Build source: 76230edddf75d4502125991214aa521d6a7ea305.
+- Branch: candidate/config-rewrite-macos.
+- GitHub Actions run: 34176273601, success. Existing workflow was not changed.
+- Native arm64 and x86_64 builds completed; ZIP executable FAT header confirms both slices.
+- Universal app --self-test passed on the Apple Silicon runner. Intel slice compiled but
+  was not separately executed. Tests include file credential selection, legacy login
+  archives, structured config rewrite, existing settings preservation and locked-file rollback.
+- Existing ad-hoc codesign completed; hdiutil verify reported VALID. Not Developer ID notarized.
+- implementation-macos.png inspected: normal layout, no errors, no real credentials.
+- Candidate retains the v3.2.2 UI/version label; distinguish it by candidate path and hashes.
+- DMG SHA-256: CE221D915813DE41E1B69340995540159ABA3168ED5F827F723F8FD39A0C5170.
+- ZIP SHA-256: E9F8157D9E539AD12BF0836BA3A0A5C86B9D26307BD46BD69295A18B42E7FFF0.
+- Downloaded hashes match the runner log. Files are in publish/candidate-config-rewrite/mac-universal.
+- Windows public-repo-layout build and --self-test passed after build path adaptation.
+  Its SHA-256: 6C0DFCD386932229D62E878FCF926A6A19137D08A086C70646EF26B476A117C4.
