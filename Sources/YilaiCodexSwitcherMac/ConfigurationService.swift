@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import ConfigRewrite
 
 enum CodexMode {
   case notConfigured
@@ -52,7 +53,6 @@ enum SwitcherError: LocalizedError {
 
 final class CodexConfigurationService {
   private let files = FileManager.default
-  private let marker = "# Managed by Yilai Codex Switcher"
   private let paths: CodexPaths
 
   init(
@@ -66,18 +66,13 @@ final class CodexConfigurationService {
 
   func mode() throws -> CodexMode {
     guard exists(paths.config) else { return .notConfigured }
-    for line in splitLines(try read(paths.config)) {
-      if isTable(line) { break }
-      if isSetting(line, key: "model_provider") {
-        let value =
-          line.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init)?
-          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if value == "\"yilai\"" || value == "'yilai'" { return .yilai }
-        if value == "\"openai\"" || value == "'openai'" { return .official }
-        return .other
-      }
+    let value = try read(paths.config).withCString { yilai_config_mode($0) }
+    switch value {
+    case 0: return .official
+    case 1: return .yilai
+    case 2: return .other
+    default: throw SwitcherError.message("config.toml 格式无效，请修复后重试。")
     }
-    return .official
   }
 
   func switchToYilai(key rawKey: String) throws {
@@ -89,13 +84,15 @@ final class CodexConfigurationService {
 
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
     let existing = exists(paths.config) ? try read(paths.config) : ""
-    try applyConfiguration(buildYilaiConfig(existing: existing, key: key), expectedKey: key)
+    let config = try buildConfiguration(existing: existing, key: key, official: false)
+    try applyConfiguration(config, expectedKey: key)
   }
 
   func switchToOfficial() throws {
     try files.createDirectory(at: paths.codex, withIntermediateDirectories: true)
     let existing = exists(paths.config) ? try read(paths.config) : ""
-    try applyConfiguration(buildOfficialConfig(existing: existing), expectedKey: nil)
+    let config = try buildConfiguration(existing: existing, key: "", official: true)
+    try applyConfiguration(config, expectedKey: nil)
   }
 
   private func applyConfiguration(_ config: String, expectedKey: String?) throws {
@@ -156,202 +153,41 @@ final class CodexConfigurationService {
     }
   }
 
-  private func buildYilaiConfig(existing: String, key: String) -> String {
-    let newline = existing.contains("\r\n") ? "\r\n" : "\n"
-    var lines = splitLines(existing)
-    removeManagedProvider(from: &lines)
-    setTopLevel("model_provider", value: "\"yilai\"", in: &lines)
-    setTopLevel("model", value: "\"gpt-5.6-sol\"", in: &lines)
-    removeTopLevel("model_catalog_json", from: &lines)
-    setTopLevel("model_catalog_json", value: "\"\(escapeToml(paths.modelCatalog.path))\"", in: &lines)
-    // Use file-only auth so existing Keychain accounts do not remain active.
-    setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
-    setTableSetting("features", key: "image_generation", value: "true", in: &lines)
-    while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-      lines.removeLast()
+  private func buildConfiguration(existing: String, key: String, official: Bool) throws -> String {
+    guard !existing.utf8.contains(0) else {
+      throw SwitcherError.message("config.toml 包含无效空字符，未修改文件。")
     }
-    if !lines.isEmpty { lines.append("") }
-    lines += [
-      marker,
-      "[model_providers.yilai]",
-      "name = \"易来 API\"",
-      "base_url = \"https://api.yilai-ai.com\"",
-      "wire_api = \"responses\"",
-      "requires_openai_auth = false",
-      "http_headers = { \"x-openai-actor-authorization\" = \"local-image-extension\" }",
-      "experimental_bearer_token = \"\(escapeToml(key))\"",
-    ]
-    return lines.joined(separator: newline) + newline
-  }
-
-  private func buildOfficialConfig(existing: String) -> String {
-    let newline = existing.contains("\r\n") ? "\r\n" : "\n"
-    var lines = splitLines(existing)
-    removeAllModelProviders(from: &lines)
-    setTopLevel("cli_auth_credentials_store", value: "\"file\"", in: &lines)
-    removeTopLevel("model_provider", from: &lines)
-    removeTopLevel("model_catalog_json", from: &lines)
-    setTopLevel("model", value: "\"gpt-5.6-terra\"", in: &lines)
-    while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-      lines.removeLast()
+    var error: UnsafeMutablePointer<CChar>?
+    let output = existing.withCString { existing in
+      key.withCString { key in
+        paths.modelCatalog.path.withCString { catalog in
+          yilai_rewrite_config(existing, key, catalog, official ? 1 : 0, &error)
+        }
+      }
     }
-    return lines.joined(separator: newline) + newline
+    defer {
+      if let output { yilai_config_free(output) }
+      if let error { yilai_config_free(error) }
+    }
+    guard let output else {
+      let detail = error.map { String(cString: $0) } ?? "Invalid configuration."
+      throw SwitcherError.message("无法生成配置：\(detail)")
+    }
+    return String(cString: output)
   }
 
   private func verifyYilaiConfiguration(expectedKey: String) throws {
     let contents = try read(paths.config)
-    let lines = splitLines(contents)
-    let firstTable = lines.firstIndex(where: isTable) ?? lines.endIndex
-    let topLevel = Array(lines[..<firstTable])
-
-    guard settingValue("model_provider", in: topLevel) == "\"yilai\"" else {
-      throw SwitcherError.message("写入后校验失败：model_provider 未设置为 yilai")
-    }
-    guard settingValue("model", in: topLevel) == "\"gpt-5.6-sol\"" else {
-      throw SwitcherError.message("写入后校验失败：未找到 gpt-5.6-sol 模型")
-    }
-    guard settingValue("model_catalog_json", in: topLevel) == "\"\(escapeToml(paths.modelCatalog.path))\"",
-      try read(paths.modelCatalog) == YilaiModelCatalog.json
-    else { throw SwitcherError.message("写入后校验失败：固定模型目录未生效") }
-    guard settingValue("cli_auth_credentials_store", in: topLevel) == "\"file\"" else {
-      throw SwitcherError.message("写入后校验失败：未切换到纯 API 登录存储")
-    }
-    guard
-      let featuresStart = lines.firstIndex(where: {
-        $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[features]"
-      })
-    else { throw SwitcherError.message("写入后校验失败：生图功能开关不存在") }
-    let featuresSearch = (featuresStart + 1)..<lines.endIndex
-    let featuresEnd = lines[featuresSearch].firstIndex(where: isTable) ?? lines.endIndex
-    let features = Array(lines[(featuresStart + 1)..<featuresEnd])
-    guard settingValue("image_generation", in: features) == "true" else {
-      throw SwitcherError.message("写入后校验失败：生图功能未启用")
-    }
-
-    guard
-      let providerStart = lines.firstIndex(where: {
-        $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[model_providers.yilai]"
-      })
-    else {
-      throw SwitcherError.message("写入后校验失败：易来 provider 配置不存在")
-    }
-    let providerEnd = lines[(providerStart + 1)...].firstIndex(where: isTable) ?? lines.endIndex
-    let provider = Array(lines[(providerStart + 1)..<providerEnd])
-    guard settingValue("base_url", in: provider) == "\"https://api.yilai-ai.com\"",
-      settingValue("wire_api", in: provider) == "\"responses\"",
-      settingValue("requires_openai_auth", in: provider) == "false",
-      settingValue("experimental_bearer_token", in: provider) == "\"\(escapeToml(expectedKey))\"",
-      settingValue("http_headers", in: provider)?.contains("local-image-extension") == true
-    else {
-      throw SwitcherError.message("写入后校验失败：易来地址、Key 或生图请求头不完整")
-    }
-  }
-
-  private func removeManagedProvider(from lines: inout [String]) {
-    while let start = lines.firstIndex(where: {
-      $0.trimmingCharacters(in: .whitespacesAndNewlines) == "[model_providers.yilai]"
-    }) {
-      var first = start
-      var end = start + 1
-      while end < lines.count && !isTable(lines[end]) { end += 1 }
-      if first > 0 && lines[first - 1].trimmingCharacters(in: .whitespacesAndNewlines) == marker {
-        first -= 1
+    let valid = contents.withCString { contents in
+      expectedKey.withCString { key in
+        paths.modelCatalog.path.withCString { catalog in
+          yilai_verify_config(contents, key, catalog) != 0
+        }
       }
-      lines.removeSubrange(first..<end)
     }
-  }
-
-  private func removeAllModelProviders(from lines: inout [String]) {
-    while let start = lines.firstIndex(where: isModelProviderTable) {
-      var first = start
-      var end = start + 1
-      while end < lines.count && !isTable(lines[end]) { end += 1 }
-      if first > 0 && lines[first - 1].trimmingCharacters(in: .whitespacesAndNewlines) == marker {
-        first -= 1
-      }
-      lines.removeSubrange(first..<end)
+    guard !contents.utf8.contains(0), valid, try read(paths.modelCatalog) == YilaiModelCatalog.json else {
+      throw SwitcherError.message("写入后校验失败：易来配置或模型目录不完整。")
     }
-  }
-
-  private func setTopLevel(_ key: String, value: String, in lines: inout [String]) {
-    let table = lines.firstIndex(where: isTable) ?? lines.endIndex
-    if let index = lines[..<table].firstIndex(where: { isSetting($0, key: key) }) {
-      lines[index] = "\(key) = \(value)"
-    } else {
-      lines.insert("\(key) = \(value)", at: table)
-    }
-  }
-
-  private func removeTopLevel(_ key: String, from lines: inout [String]) {
-    let table = lines.firstIndex(where: isTable) ?? lines.endIndex
-    for index in lines[..<table].indices.reversed() where isSetting(lines[index], key: key) {
-      lines.remove(at: index)
-    }
-  }
-
-  private func setTableSetting(
-    _ tableName: String, key: String, value: String, in lines: inout [String]
-  ) {
-    let header = "[\(tableName)]"
-    guard
-      let tableStart = lines.firstIndex(where: {
-        $0.trimmingCharacters(in: .whitespacesAndNewlines) == header
-      })
-    else {
-      while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-        lines.removeLast()
-      }
-      if !lines.isEmpty { lines.append("") }
-      lines += [header, "\(key) = \(value)"]
-      return
-    }
-
-    let tableSearch = (tableStart + 1)..<lines.endIndex
-    let tableEnd = lines[tableSearch].firstIndex(where: isTable) ?? lines.endIndex
-    if let index = lines[(tableStart + 1)..<tableEnd].firstIndex(where: {
-      isSetting($0, key: key)
-    }) {
-      lines[index] = "\(key) = \(value)"
-    } else {
-      lines.insert("\(key) = \(value)", at: tableEnd)
-    }
-  }
-
-  private func splitLines(_ value: String) -> [String] {
-    value.replacingOccurrences(of: "\r\n", with: "\n")
-      .replacingOccurrences(of: "\r", with: "\n")
-      .split(separator: "\n", omittingEmptySubsequences: false)
-      .map(String.init)
-      .dropLast(value.hasSuffix("\n") || value.hasSuffix("\r") ? 1 : 0)
-      .map { $0 }
-  }
-
-  private func isTable(_ line: String) -> Bool {
-    let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.hasPrefix("[") && value.hasSuffix("]")
-  }
-
-  private func isModelProviderTable(_ line: String) -> Bool {
-    let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.hasPrefix("[model_providers.") && value.hasSuffix("]")
-  }
-
-  private func isSetting(_ line: String, key: String) -> Bool {
-    let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard value.hasPrefix(key) else { return false }
-    return value.dropFirst(key.count).trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("=")
-  }
-
-  private func settingValue(_ key: String, in lines: [String]) -> String? {
-    guard let line = lines.first(where: { isSetting($0, key: key) }) else { return nil }
-    return line.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-
-
-  private func escapeToml(_ value: String) -> String {
-    value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
   }
 
   private func exists(_ url: URL) -> Bool { files.fileExists(atPath: url.path) }
@@ -388,6 +224,11 @@ final class CodexConfigurationService {
 }
 
 func runSelfTest() throws {
+  var coreError: UnsafeMutablePointer<CChar>?
+  let corePassed = yilai_config_self_test(&coreError) != 0
+  let detail = coreError.map { String(cString: $0) } ?? "Structured configuration self-test failed."
+  if let coreError { yilai_config_free(coreError) }
+  guard corePassed else { throw SwitcherError.message(detail) }
   let catalog = try JSONSerialization.jsonObject(with: Data(YilaiModelCatalog.json.utf8)) as? [String: Any]
   guard let models = catalog?["models"] as? [[String: Any]],
     models.compactMap({ $0["slug"] as? String }) == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
@@ -504,7 +345,7 @@ func runSelfTest() throws {
   try Data(originalAuth.utf8).write(to: upgradeRoot.appendingPathComponent("auth.json.yilai-disabled"))
   let oldConfig = try String(contentsOf: upgradeRoot.appendingPathComponent("config.toml"), encoding: .utf8)
     .components(separatedBy: .newlines).filter { !$0.hasPrefix("model_catalog_json") }.joined(separator: "\n")
-  try ("model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n" + oldConfig)
+  try ("model_catalog_json = \"old-catalog.json\"\n" + oldConfig)
     .data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("config.toml"))
   try "old catalog containing luna".data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("yilai-model-catalog.json"))
   try "old cache containing luna".data(using: .utf8)!.write(to: upgradeRoot.appendingPathComponent("models_cache.json"))

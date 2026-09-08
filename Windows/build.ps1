@@ -28,7 +28,8 @@ try {
     $optimization = if ($Configuration -eq "Debug") { "-O0" } else { "-O2" }
     & $compiler -std=c++20 $optimization -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 `
         -finput-charset=UTF-8 -municode -mwindows -static -static-libgcc -static-libstdc++ `
-        "main.cpp" "config.cpp" $object -o $output `
+        -I "../Sources/ConfigRewrite/include" `
+        "main.cpp" "config.cpp" "../Sources/ConfigRewrite/config_rewrite.cpp" $object -o $output `
         -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lcomctl32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -ladvapi32
     if ($LASTEXITCODE -ne 0) { throw "Native C++ build failed with exit code $LASTEXITCODE." }
 

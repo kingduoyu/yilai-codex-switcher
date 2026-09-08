@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include "model_catalog.hpp"
+#include "ConfigRewrite.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -15,9 +17,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kProviderId = "yilai";
-constexpr const char* kMarker = "# Managed by Yilai Codex Switcher";
-constexpr const char* kOfficialModel = "gpt-5.6-terra";
 
 
 
@@ -55,6 +54,7 @@ std::string readBytes(const fs::path& path) {
     if (!stream) fail(L"无法读取文件：" + path.wstring());
     std::ostringstream output;
     output << stream.rdbuf();
+    if (stream.bad()) fail(L"无法完整读取文件：" + path.wstring());
     return output.str();
 }
 
@@ -83,108 +83,13 @@ void writeAtomic(const fs::path& path, const std::string& data) {
     }
 }
 
-std::string trim(const std::string& value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return {};
-    const auto last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
+
 
 std::wstring trim(const std::wstring& value) {
     const auto first = value.find_first_not_of(L" \t\r\n");
     if (first == std::wstring::npos) return {};
     const auto last = value.find_last_not_of(L" \t\r\n");
     return value.substr(first, last - first + 1);
-}
-
-std::vector<std::string> splitLines(const std::string& value) {
-    std::vector<std::string> lines;
-    std::string normalized;
-    normalized.reserve(value.size());
-    for (size_t i = 0; i < value.size(); ++i) {
-        if (value[i] == '\r') {
-            if (i + 1 < value.size() && value[i + 1] == '\n') continue;
-            normalized.push_back('\n');
-        } else {
-            normalized.push_back(value[i]);
-        }
-    }
-    while (!normalized.empty() && normalized.back() == '\n') normalized.pop_back();
-    std::istringstream stream(normalized);
-    std::string line;
-    while (std::getline(stream, line)) lines.push_back(line);
-    return lines;
-}
-
-bool isTableHeader(const std::string& line) {
-    const std::string value = trim(line);
-    return value.size() >= 2 && value.front() == '[' && value.back() == ']';
-}
-
-bool isSetting(const std::string& line, const std::string& key) {
-    const std::string value = trim(line);
-    if (value.rfind(key, 0) != 0) return false;
-    return trim(value.substr(key.size())).rfind("=", 0) == 0;
-}
-
-void setTopLevel(std::vector<std::string>& lines, const std::string& key, const std::string& value) {
-    size_t firstTable = lines.size();
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (isTableHeader(lines[i])) {
-            firstTable = i;
-            break;
-        }
-    }
-    for (size_t i = 0; i < firstTable; ++i) {
-        if (isSetting(lines[i], key)) {
-            lines[i] = key + " = " + value;
-            return;
-        }
-    }
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(firstTable), key + " = " + value);
-}
-
-void removeTopLevel(std::vector<std::string>& lines, const std::string& key) {
-    size_t firstTable = lines.size();
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (isTableHeader(lines[i])) {
-            firstTable = i;
-            break;
-        }
-    }
-    for (size_t i = firstTable; i-- > 0;) {
-        if (isSetting(lines[i], key)) lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i));
-    }
-}
-
-bool isModelProviderHeader(const std::string& line) {
-    const std::string value = trim(line);
-    return value.rfind("[model_providers.", 0) == 0 && value.size() > 18 && value.back() == ']';
-}
-
-void removeAllModelProviders(std::vector<std::string>& lines) {
-    while (true) {
-        auto startIt = std::find_if(lines.begin(), lines.end(), isModelProviderHeader);
-        if (startIt == lines.end()) return;
-        size_t start = static_cast<size_t>(std::distance(lines.begin(), startIt));
-        size_t end = start + 1;
-        while (end < lines.size() && !isTableHeader(lines[end])) ++end;
-        if (start > 0 && trim(lines[start - 1]) == kMarker) --start;
-        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(start), lines.begin() + static_cast<std::ptrdiff_t>(end));
-    }
-}
-
-void removeManagedProvider(std::vector<std::string>& lines) {
-    const std::string header = std::string("[model_providers.") + kProviderId + "]";
-    while (true) {
-        auto startIt = std::find_if(lines.begin(), lines.end(), [&](const std::string& line) { return trim(line) == header; });
-        if (startIt == lines.end()) return;
-        size_t start = static_cast<size_t>(std::distance(lines.begin(), startIt));
-        size_t end = start + 1;
-        while (end < lines.size() && !isTableHeader(lines[end])) ++end;
-        if (start > 0 && trim(lines[start - 1]) == kMarker) --start;
-        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(start), lines.begin() + static_cast<std::ptrdiff_t>(end));
-    }
 }
 
 std::string escapeToml(std::string value) {
@@ -197,52 +102,16 @@ std::string escapeToml(std::string value) {
     return result;
 }
 
-std::string buildYilaiConfig(const std::string& existing, const std::string& key, const fs::path& catalog) {
-    const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
-    auto lines = splitLines(existing);
-    removeManagedProvider(lines);
-    setTopLevel(lines, "cli_auth_credentials_store", "\"file\"");
-    setTopLevel(lines, "model_provider", "\"yilai\"");
-    setTopLevel(lines, "model", "\"gpt-5.6-sol\"");
-    removeTopLevel(lines, "model_catalog_json");
-    setTopLevel(lines, "model_catalog_json", "\"" + escapeToml(wideToUtf8(catalog.wstring())) + "\"");
-    while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
-    if (!lines.empty()) lines.emplace_back();
-    lines.emplace_back(kMarker);
-    lines.emplace_back("[model_providers.yilai]");
-    lines.emplace_back("name = \"易来 API\"");
-    lines.emplace_back("base_url = \"https://api.yilai-ai.com\"");
-    lines.emplace_back("wire_api = \"responses\"");
-    lines.emplace_back("requires_openai_auth = false");
-    lines.emplace_back("http_headers = { \"x-openai-actor-authorization\" = \"local-image-extension\" }");
-    lines.emplace_back("experimental_bearer_token = \"" + escapeToml(key) + "\"");
-
-    std::ostringstream output;
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (i) output << newline;
-        output << lines[i];
-    }
-    output << newline;
-    return output.str();
-}
-
-std::string buildOfficialConfig(const std::string& existing) {
-    const std::string newline = existing.find("\r\n") != std::string::npos ? "\r\n" : "\n";
-    auto lines = splitLines(existing);
-    removeAllModelProviders(lines);
-    setTopLevel(lines, "cli_auth_credentials_store", "\"file\"");
-    removeTopLevel(lines, "model_provider");
-    removeTopLevel(lines, "model_catalog_json");
-    setTopLevel(lines, "model", std::string("\"") + kOfficialModel + "\"");
-    while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
-
-    std::ostringstream output;
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (i) output << newline;
-        output << lines[i];
-    }
-    output << newline;
-    return output.str();
+std::string buildConfig(const std::string& existing, const std::string& key,
+                        const fs::path& catalog, bool official) {
+    if (existing.find('\0') != std::string::npos) fail(L"config.toml 包含无效空字符，未修改文件。");
+    char* error = nullptr;
+    const auto path = wideToUtf8(catalog.wstring());
+    using Buffer = std::unique_ptr<char, decltype(&yilai_config_free)>;
+    Buffer output(yilai_rewrite_config(existing.c_str(), key.c_str(), path.c_str(), official, &error), yilai_config_free);
+    Buffer diagnostic(error, yilai_config_free);
+    if (!output) fail(L"无法生成配置：" + utf8ToWide(diagnostic ? diagnostic.get() : "Invalid configuration."));
+    return output.get();
 }
 
 void applyConfiguration(const CodexPaths& paths, const std::string& config, bool writeCatalog) {
@@ -312,17 +181,12 @@ CodexPaths currentPaths() {
 
 CodexMode getMode(const CodexPaths& paths) {
     if (!pathExists(paths.config)) return CodexMode::NotConfigured;
-    for (const auto& line : splitLines(readBytes(paths.config))) {
-        if (isTableHeader(line)) break;
-        if (isSetting(line, "model_provider")) {
-            const size_t separator = line.find('=');
-            const std::string value = separator == std::string::npos ? "" : trim(line.substr(separator + 1));
-            if (value == "\"yilai\"" || value == "'yilai'") return CodexMode::Yilai;
-            if (value == "\"openai\"" || value == "'openai'") return CodexMode::Official;
-            return CodexMode::Other;
-        }
+    switch (yilai_config_mode(readBytes(paths.config).c_str())) {
+    case 0: return CodexMode::Official;
+    case 1: return CodexMode::Yilai;
+    case 2: return CodexMode::Other;
+    default: fail(L"config.toml 格式无效，请修复后重试。");
     }
-    return CodexMode::Official;
 }
 
 void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
@@ -335,7 +199,7 @@ void switchToYilai(const std::wstring& rawKey, const CodexPaths& paths) {
     fs::create_directories(paths.codex, error);
     if (error) fail(L"无法创建 .codex 目录");
     const std::string existing = pathExists(paths.config) ? readBytes(paths.config) : std::string();
-    applyConfiguration(paths, buildYilaiConfig(existing, wideToUtf8(keyWide), paths.modelCatalog), true);
+    applyConfiguration(paths, buildConfig(existing, wideToUtf8(keyWide), paths.modelCatalog, false), true);
 }
 
 void switchToOfficial(const CodexPaths& paths) {
@@ -344,11 +208,16 @@ void switchToOfficial(const CodexPaths& paths) {
     if (error) fail(L"无法创建 .codex 目录");
 
     const std::string existing = pathExists(paths.config) ? readBytes(paths.config) : std::string();
-    applyConfiguration(paths, buildOfficialConfig(existing), false);
+    applyConfiguration(paths, buildConfig(existing, "", paths.modelCatalog, true), false);
 }
 
 bool runSelfTest(std::wstring& error) {
     try {
+        char* coreError = nullptr;
+        const bool corePassed = yilai_config_self_test(&coreError) != 0;
+        const std::string diagnostic = coreError ? coreError : "Structured configuration self-test failed.";
+        yilai_config_free(coreError);
+        require(corePassed, utf8ToWide(diagnostic));
         const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
         const fs::path root = fs::temp_directory_path() / (L"YilaiCodexSwitcher-cpp-" + std::to_wstring(stamp));
         fs::create_directories(root);
@@ -452,10 +321,7 @@ bool runSelfTest(std::wstring& error) {
         writeAtomic(upgradePaths.manifest, "{\"AuthExisted\":true}");
         writeAtomic(upgradePaths.backupConfig, originalConfig);
         writeAtomic(upgradePaths.disabledAuth, originalAuth);
-        auto oldLines = splitLines(readBytes(upgradePaths.config));
-        removeTopLevel(oldLines, "model_catalog_json");
-        std::string oldConfig = "model_catalog_json = \"old-catalog.json\"\nmodel_catalog_json = \"stale-catalog.json\"\n";
-        for (const auto& line : oldLines) oldConfig += line + "\n";
+        const std::string oldConfig = "model_catalog_json = \"old-catalog.json\"\n" + originalConfig;
         writeAtomic(upgradePaths.config, oldConfig);
         writeAtomic(upgradePaths.modelCatalog, "old catalog containing luna");
         writeAtomic(upgradePaths.codex / L"models_cache.json", "old cache containing luna");
