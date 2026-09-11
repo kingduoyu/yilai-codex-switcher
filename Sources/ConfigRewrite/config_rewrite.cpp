@@ -41,7 +41,7 @@ void set_model(toml::table &scope, const char *catalog, bool official) {
     scope.erase("model_catalog_json");
     scope.insert_or_assign("model", official ? "gpt-5.6-terra" : "gpt-5.6-sol");
     if (!official) {
-        scope.insert_or_assign("model_provider", "yilai");
+        scope.insert_or_assign("model_provider", "custom");
         scope.insert_or_assign("model_catalog_json", catalog);
     }
 }
@@ -82,7 +82,7 @@ toml::table rewrite(const char *existing, const char *key, const char *catalog, 
             {"http_headers", toml::table{{"x-openai-actor-authorization", "local-image-extension"}}},
         };
         // Replacing the node also removes stale nested headers and auth settings.
-        table_at(root, "model_providers").insert_or_assign("yilai", std::move(provider));
+        table_at(root, "model_providers").insert_or_assign("custom", std::move(provider));
     }
     return root;
 }
@@ -118,7 +118,7 @@ sandbox_mode = "workspace-write"
 mcp_oauth_credentials_store = "keyring"
 notify = ["keep-notify", "argument"]
 developer_instructions = '''Keep this text verbatim:
-[model_providers.yilai]
+[model_providers.custom]
 api_key = "this is instruction text, not a setting"
 '''
 [sandbox_workspace_write]
@@ -127,13 +127,13 @@ network_access = true
 [features]
 image_generation = false
 shell_tool = true
-[model_providers.yilai] # Old nested credentials must be replaced together.
+[model_providers.custom] # Old nested credentials must be replaced together.
 name = "Old"
 base_url = "https://old.example"
 requires_openai_auth = true
-[model_providers.yilai.http_headers]
+[model_providers.custom.http_headers]
 Authorization = "Bearer sk-old-test"
-[model_providers.yilai.env_http_headers]
+[model_providers.custom.env_http_headers]
 Authorization = "OLD_TEST_TOKEN"
 [model_providers.other]
 name = "Keep this inactive provider"
@@ -162,13 +162,13 @@ model = "keep-spare-model"
 )toml";
     auto original = toml::parse(old);
     auto result = rewrite(old, "sk-new-test", "/tmp/new-catalog.json", false);
-    check(result["model_provider"] == "yilai", "Root provider was not replaced.");
+    check(result["model_provider"] == "custom", "Root provider was not replaced.");
     check(result["features"]["image_generation"] == true, "Image generation is disabled.");
-    check(result["profiles"]["work"]["model_provider"] == "yilai", "Active profile overrides provider.");
+    check(result["profiles"]["work"]["model_provider"] == "custom", "Active profile overrides provider.");
     check(result["profiles"]["work"]["features"]["image_generation"] == true, "Active profile disables images.");
-    check(result["model_providers"]["yilai"]["requires_openai_auth"] == false, "Official auth still required.");
-    check(!result["model_providers"]["yilai"]["env_http_headers"], "Old nested credentials remain.");
-    check(!result["model_providers"]["yilai"]["http_headers"]["Authorization"], "Old Authorization remains.");
+    check(result["model_providers"]["custom"]["requires_openai_auth"] == false, "Official auth still required.");
+    check(!result["model_providers"]["custom"]["env_http_headers"], "Old nested credentials remain.");
+    check(!result["model_providers"]["custom"]["http_headers"]["Authorization"], "Old Authorization remains.");
     check(!result.contains("forced_login_method") && !result.contains("openai_base_url"), "Old auth restrictions remain.");
     for (const char *field : {"mcp_servers", "plugins", "projects", "mcp_oauth_credentials_store",
                               "notify", "developer_instructions", "sandbox_workspace_write"}) {
@@ -196,10 +196,10 @@ model = "keep-spare-model"
     auto escaped = rewrite("", "sk-\"quoted\\key", "C:\\catalog\"name.json", false);
     check(toml::parse(format(escaped)) == escaped, "Escaped values changed.");
     auto inline_config = rewrite(R"(features = { image_generation = false, shell_tool = true }
-model_providers = { yilai = { name = "Old", http_headers = { Authorization = "old-key" } }, other = { name = "Keep" } }
+model_providers = { custom = { name = "Old", http_headers = { Authorization = "old-key" } }, other = { name = "Keep" } }
 )", "new-key", "/tmp/catalog.json", false);
     check(inline_config["model_providers"]["other"]["name"] == "Keep", "Inline inactive provider changed.");
-    check(!inline_config["model_providers"]["yilai"]["http_headers"]["Authorization"], "Inline old credentials remain.");
+    check(!inline_config["model_providers"]["custom"]["http_headers"]["Authorization"], "Inline old credentials remain.");
     check(toml::parse(format(inline_config)) == inline_config, "Inline TOML does not round-trip.");
 }
 } // namespace
@@ -233,7 +233,7 @@ extern "C" int yilai_config_mode(const char *text) {
         auto provider = profile && profile->contains("model_provider")
             ? (*profile)["model_provider"].value<std::string>() : root["model_provider"].value<std::string>();
         if (!provider || *provider == "openai") return 0;
-        return *provider == "yilai" ? 1 : 2;
+        return *provider == "custom" ? 1 : 2;
     } catch (...) { return -1; }
 }
 
