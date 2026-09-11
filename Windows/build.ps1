@@ -18,3 +18,7 @@ try {
     & "$bin/llvm-strip.exe" --strip-all "$output/YilaiCodexSwitcher.exe"
 } finally { Pop-Location }
 Get-Item "$output/YilaiCodexSwitcher.exe" | Select-Object FullName,Length
+
+$manifest = [xml](Get-Content "$root/Windows/app.manifest" -Raw)
+$version = ($manifest.assembly.assemblyIdentity.version -replace "\.0$", "")
+Copy-Item -LiteralPath "$output/YilaiCodexSwitcher.exe" -Destination "$output/YilaiCodexSwitcher-v$version.exe" -Force

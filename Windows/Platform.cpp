@@ -119,10 +119,12 @@ struct OperationLog {
   YilaiDiagnostic *context;
   std::string stage = "start";
   std::string label = "开始操作";
+  std::function<void(const std::wstring &)> progress;
   void step(const char *code, const char *description) {
     stage = code;
     label = description;
     yilai_diagnostic_event(context, code, description);
+    if (progress) progress(wide(description));
   }
 };
 } // namespace
@@ -186,7 +188,8 @@ static std::wstring perform(Action action, const fs::path &root,
     return L"旧配置已停用。填写 API Key 后可重新切换。";
   }
   std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(nullptr, yilai_sources_finish);
-  if ((action == Action::Configure) && (closed || !runtimeOverride.empty())) {
+  // Runtime source diagnostics are opt-in for maintenance/tests, never the UI path.
+  if ((action == Action::Configure) && !runtimeOverride.empty()) {
     log.step("inspect_sources", "识别当前生效来源");
     char *sourceError = nullptr;
     sources.reset(yilai_sources_prepare(utf8(root.wstring()).c_str(), utf8(runtimeOverride.wstring()).c_str(), &sourceError));
@@ -214,14 +217,23 @@ static std::wstring perform(Action action, const fs::path &root,
   Buffer detail(error, yilai_config_free);
   ensure(result != nullptr,
          detail ? detail.get() : "Configuration update failed");
-  const std::string after(result.get());
+  const auto catalogPath = root / L"yilai-model-catalog.json";
+  regular(catalogPath);
+  const bool hadCatalog = fs::exists(catalogPath);
+  const auto catalogBefore = hadCatalog ? read(catalogPath) : "";
+  const std::string catalogAfter(yilai_model_catalog());
+  char *catalogError = nullptr;
+  Buffer withCatalog(yilai_configure_catalog(result.get(), utf8(catalogPath.wstring()).c_str(), &catalogError), yilai_config_free);
+  Buffer catalogDetail(catalogError, yilai_config_free);
+  ensure(withCatalog != nullptr, catalogDetail ? catalogDetail.get() : "模型目录配置失败");
+  const std::string after(withCatalog.get());
   ensure((fs::exists(config) ? read(config) : "") == before,
          "配置已被其他程序改动，请关闭后重试。");
   const auto authPath = root / L"auth.json";
   regular(authPath);
   const bool hadAuth = fs::exists(authPath);
   const auto authBefore = hadAuth ? read(authPath) : "";
-  bool wroteConfig = false, removedAuth = false;
+  bool wroteConfig = false, removedAuth = false, wroteCatalog = false;
   try {
     if (sources) {
       log.step("clear_sources", "清除旧连接覆盖");
@@ -230,6 +242,10 @@ static std::wstring perform(Action action, const fs::path &root,
       Buffer sourceDetail(sourceError, yilai_config_free);
       ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源清理失败");
     }
+    log.step("write_catalog", "写入三个指定模型");
+    ensure(fs::exists(catalogPath) == hadCatalog && (hadCatalog ? read(catalogPath) : "") == catalogBefore, "模型目录已被其他程序改动");
+    atomic(catalogPath, catalogAfter);
+    wroteCatalog = true;
     log.step("write_config", "写入连接配置");
     ensure(fs::exists(config) == hadConfig && (hadConfig ? read(config) : "") == before,
            "配置已被其他程序改动，请关闭后重试。");
@@ -273,6 +289,17 @@ static std::wstring perform(Action action, const fs::path &root,
       restored = false;
       yilai_diagnostic_event(log.context, "rollback_config", e.what());
     }
+    log.step("rollback_catalog", "还原模型目录");
+    try {
+      if (wroteCatalog) {
+        ensure(fs::exists(catalogPath) && read(catalogPath) == catalogAfter, "模型目录已被外部修改，未覆盖");
+        if (hadCatalog) atomic(catalogPath, catalogBefore);
+        else fs::remove(catalogPath);
+      }
+    } catch (const std::exception &e) {
+      restored = false;
+      yilai_diagnostic_event(log.context, "rollback_catalog", e.what());
+    }
     log.step("rollback_auth", "还原登录文件");
     try {
       if (removedAuth) {
@@ -300,10 +327,12 @@ static std::wstring perform(Action action, const fs::path &root,
   return L"API 已配置，生图已启用。请重新打开 Codex。";
 }
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed, const fs::path &runtimeOverride) {
+                 bool closed, const fs::path &runtimeOverride,
+                 std::function<void(const std::wstring &)> progress) {
   const char *name = action == Action::Configure ? "configure_api" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
+  log.progress = std::move(progress);
   try {
     auto result = perform(action, root, input, closed, log, runtimeOverride);
     yilai_diagnostic_end(log.context, 1, "操作完成");
@@ -375,6 +404,7 @@ bool selfTest(std::wstring &error) {
     yilai_operation_unlock(held);
     ensure(rejected && read(root / L"config.toml") == config && read(root / L"auth.json") == auth,
            "Overlapping operation was not rejected without changes");
+    atomic(root / L"yilai-model-catalog.json", "old-catalog-sentinel");
     HANDLE locked = CreateFileW((root / L"auth.json").c_str(), GENERIC_READ,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -389,6 +419,7 @@ bool selfTest(std::wstring &error) {
     ensure(failed && read(root / L"config.toml") == config &&
                read(root / L"auth.json") == auth,
            "Auth deletion failure did not roll back configuration");
+    ensure(read(root / L"yilai-model-catalog.json") == "old-catalog-sentinel", "Auth failure did not restore catalog");
     const std::string history = "invalid history must remain unchanged\n";
     atomic(root / L"sessions/example.jsonl", history);
     atomic(root / L"state_5.sqlite", "opaque database sentinel");
@@ -396,6 +427,7 @@ bool selfTest(std::wstring &error) {
     run(Action::Configure, root, L"sk-test", false);
     ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"), "API configure did not remove auth");
     ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"state_5.sqlite") == "opaque database sentinel" && read(root / L"yilai-history-backups/pending.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
+    ensure(read(root / L"yilai-model-catalog.json") == yilai_model_catalog(), "Managed catalog not written");
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);
     atomic(root / L"auth.json", auth);

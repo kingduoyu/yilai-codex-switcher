@@ -1,4 +1,5 @@
 #include "ConfigRewrite.h"
+#include "model_catalog_data.hpp"
 #include "vendor/toml.hpp"
 #include <algorithm>
 #include <cctype>
@@ -233,6 +234,18 @@ void check(bool condition, const char *message) {
     throw std::runtime_error(message);
 }
 void self_test() {
+  const char *catalogInput = "profile='work'\nmodel='unsupported'\nmodel_catalog_json='old.json'\n[profiles.work]\nmodel_catalog_json='stale.json'\n[profiles.other]\nmodel_catalog_json='keep.json'\n";
+  const char *catalogPath = "C:\\Users\\test name\\.codex\\yilai-model-catalog.json";
+  char *catalogFailure = nullptr;
+  char *rewritten = yilai_configure_catalog(catalogInput, catalogPath, &catalogFailure);
+  check(rewritten != nullptr && catalogFailure == nullptr, "Catalog configuration failed.");
+  auto catalogRoot = toml::parse(rewritten);
+  yilai_config_free(rewritten);
+  check(catalogRoot["model_catalog_json"] == catalogPath &&
+        catalogRoot["profiles"]["work"]["model_catalog_json"] == catalogPath &&
+        catalogRoot["profiles"]["other"]["model_catalog_json"] == "keep.json" &&
+        catalogRoot["model"] == "gpt-5.6-sol", "Catalog path/profile/default model mismatch.");
+
   const char *ccs = R"toml(
 profile = "work"
 model_provider = "custom"
@@ -645,6 +658,30 @@ extern "C" char *yilai_clear_connection_overrides(const char *text, char **error
       *error = copy_string("Unable to clear connection overrides.");
   }
   return nullptr;
+}
+extern "C" const char *yilai_model_catalog(void) { return kModelCatalog; }
+extern "C" char *yilai_configure_catalog(const char *configured, const char *path, char **error) {
+  if (error) *error = nullptr;
+  try {
+    if (!configured || !path || !*path) throw std::runtime_error("Missing catalog input.");
+    auto root = toml::parse(configured);
+    // Set the same owned directory for root and the selected profile only.
+    for (auto *scope : {&root, active_profile(root)}) if (scope) {
+      scope->insert_or_assign("model_catalog_json", std::string(path));
+    }
+    auto *profile = active_profile(root);
+    auto &modelScope = profile && profile->contains("model") ? *profile : root;
+    const auto model = modelScope["model"].value_or(std::string());
+    if (model != "gpt-5.6-sol" && model != "gpt-5.6-terra" && model != "gpt-6-astra") {
+      modelScope.insert_or_assign("model", "gpt-5.6-sol");
+    }
+    auto *result = copy_string(format(root));
+    if (!result) throw std::runtime_error("Out of memory.");
+    return result;
+  } catch (...) {
+    if (error) *error = copy_string("Unable to configure the model catalog.");
+    return nullptr;
+  }
 }
 extern "C" void yilai_config_free(char *value) { std::free(value); }
 extern "C" int yilai_config_mode(const char *text) {

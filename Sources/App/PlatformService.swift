@@ -222,7 +222,8 @@ final class PlatformService {
         }
         var sources: OpaquePointer?
         defer { if let sources { yilai_sources_finish(sources) } }
-        if requireClosed || !runtimeOverride.isEmpty {
+        // Explicit maintenance/test diagnostics only; normal configuration is local.
+        if !runtimeOverride.isEmpty {
             log.event("prepare_sources", "Reading effective configuration layers using the installed runtime")
             var sourceError: UnsafeMutablePointer<CChar>?
             defer { if let sourceError { yilai_config_free(sourceError) } }
@@ -261,11 +262,22 @@ final class PlatformService {
         guard let output else {
             throw AppError(message: failure.map { String(cString: $0) } ?? "配置更新失败")
         }
-        let after = Data(String(cString: output).utf8)
+        let catalogURL = root.appendingPathComponent("yilai-model-catalog.json")
+        let beforeCatalog = try snapshot(catalogURL)
+        let catalogData = Data(String(cString: yilai_model_catalog()).utf8)
+        var catalogError: UnsafeMutablePointer<CChar>?
+        let withCatalog = catalogURL.path.withCString { yilai_configure_catalog(output, $0, &catalogError) }
+        defer {
+            if let withCatalog { yilai_config_free(withCatalog) }
+            if let catalogError { yilai_config_free(catalogError) }
+        }
+        guard let withCatalog else { throw AppError(message: "模型目录配置失败") }
+        let after = Data(String(cString: withCatalog).utf8)
         let beforeAuth = try snapshot(auth)
         guard try snapshot(config) == beforeConfig else {
             throw AppError(message: "配置已被其他程序改动，请关闭后重试。")
         }
+        var catalogChanged = false
         var configChanged = false
         var authRemoved = false
         var sourcesAttempted = false
@@ -279,6 +291,10 @@ final class PlatformService {
                     throw AppError(message: sourceError.map { String(cString: $0) } ?? "连接覆盖配置处理失败。")
                 }
             }
+            log.event("write_catalog", "Writing the three managed models")
+            guard try snapshot(catalogURL) == beforeCatalog else { throw AppError(message: "模型目录已被其他程序改动") }
+            try write(catalogData, catalogURL)
+            catalogChanged = true
             log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
@@ -315,6 +331,15 @@ final class PlatformService {
                 } catch {
                     failures.append("连接配置")
                     log.event("rollback_config", "Restore failed: \(operationErrorDescription(error))")
+                }
+            }
+            if catalogChanged {
+                do {
+                    guard try snapshot(catalogURL) == catalogData else { throw AppError(message: "模型目录已被外部修改，未覆盖") }
+                    try restore(beforeCatalog, catalogURL)
+                } catch {
+                    failures.append("模型目录")
+                    log.event("rollback_catalog", operationErrorDescription(error))
                 }
             }
             if authRemoved {
@@ -503,6 +528,7 @@ func selfTest() throws {
     try check(missingRuntimeError.contains("识别配置来源"), "Explicit test runtime did not enable source verification")
     try check(try text("config.toml") == config && text("auth.json") == auth, "Source preparation failure changed config/auth")
 
+    try Data("old-catalog-sentinel".utf8).write(to: root.appendingPathComponent("yilai-model-catalog.json"))
     // An immutable auth file must fail the switch without changing config/history.
     let authPath = root.appendingPathComponent("auth.json").path
     guard chflags(authPath, UInt32(UF_IMMUTABLE)) == 0 else {
@@ -514,6 +540,7 @@ func selfTest() throws {
     catch { failed = true }
     _ = chflags(authPath, 0)
     try check(try failed && text("config.toml") == config && text("auth.json") == auth, "Locked auth switch rollback failed")
+    try check(try text("yilai-model-catalog.json") == "old-catalog-sentinel", "Auth failure did not restore catalog")
     try checkUntouchedFiles()
 
     // Configuration succeeds even with opaque or malformed history/database files.
@@ -523,7 +550,8 @@ func selfTest() throws {
     try check(!files.fileExists(atPath: authPath), "API switch retained auth")
     let configured = try text("config.toml")
     try check(configured.contains("image_generation = true"), "API switch did not enable images")
-    try check(configured.contains("gpt-6-astra") && configured.contains("cc-switch-model-catalog.json"), "API switch changed the model or catalog")
+    try check(configured.contains("gpt-6-astra") && configured.contains("yilai-model-catalog.json"), "API switch did not install the managed catalog")
+    try check(try text("yilai-model-catalog.json") == String(cString: yilai_model_catalog()), "Managed catalog bytes differ")
     try checkUntouchedFiles()
     _ = try service.run(.configure, key: "sk-test-key", requireClosed: false)
     try check(try text("config.toml") == configured, "API configuration is not idempotent")

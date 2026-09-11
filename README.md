@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.6
+# 易来 Codex 配置器 v3.3.7
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。官方连接切换交给 CCS，本工具不提供切回官方或恢复旧配置的入口。
 
@@ -13,10 +13,8 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 ## 配置与兼容
 
 - 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并删除当前 CODEX_HOME/auth.json。
-- 保留用户模型、推理档位、CCS 模型目录、MCP、权限等无关配置；不修改 CCS 的开关、账号数据库或软件。
-- API 写入前通过已安装 Codex 的 config/read 识别实际加载的来源，备份并移除已加载的更高优先级连接覆盖，写入后回读验证。配置、认证或来源核验失败时撤销本次未完成的配置操作。
-- 检测覆盖默认用户目录和桌面记录的当前活动本地项目。未受信任项目不修改；未加载的 profile 不扫描；任意独立 CLI --profile/-c、未来项目及系统/组织策略不在自动处理范围。
-- Windows 优先采用桌面端版本目录中的运行时，旧 bin/codex.exe 仅作为后备。macOS 使用其应用包运行时。
+- 写入内置的 sol、terra、astra 三个模型和模型目录指向；保留已有合法模型选择，否则默认 sol。保留推理档位、MCP、权限等无关配置。
+- 主按钮只执行本地配置写入，不启动 Codex、不检查跨文件优先级、不做运行时回读。写入错误保留日志并恢复本次改动。
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
 
 ## 本地历史与日志
@@ -29,7 +27,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 先在 CCS 选择 API 供应商，再退出 CCS 和 Codex，运行本配置器。不要在 CCS 仍选中官方时用外部工具改写连接：CCS 后续可能把磁盘配置回存到当前官方条目。本版没有修复 CCS 回存状态冲突，也不修改其数据库。
 
-模型选择和现有目录指向原样保留，包括旧版 yilai-model-catalog.json；不删除旧指向，不获取或生成新目录。新安装用户需要已有模型目录或使用运行时默认列表。
+每次配置都会写入内置 model-catalog.json 中固定的 gpt-5.6-sol、gpt-5.6-terra、gpt-6-astra，到 CODEX_HOME/yilai-model-catalog.json，并更新根配置和当前 profile 的指向；不联网获取模型。其他目录文件不删除。若有其他来源覆盖，需另行处理；重置按钮只改名当前 config.toml，随后重新配置。
 
 ## 开发与验证
 
@@ -41,4 +39,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-版本事实见 releases/v3.3.6/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.7/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。

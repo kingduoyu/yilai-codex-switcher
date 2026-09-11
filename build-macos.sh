@@ -36,7 +36,8 @@ codesign --force --deep --sign - "$APP"
 "$APP/Contents/MacOS/YilaiCodexSwitcherMac" --self-test
 
 DMG_STAGE="$ROOT/.dmg-stage"
-DMG="$PUBLISH/YilaiCodexSwitcher-macOS-universal.dmg"
+VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$ROOT/Info.plist")
+DMG="$PUBLISH/YilaiCodexSwitcher-v${VERSION}-macOS-universal.dmg"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE/.background"
 cp -R "$APP" "$DMG_STAGE/"
@@ -48,7 +49,7 @@ hdiutil create -volname "易来 Codex 切换器" -srcfolder "$DMG_STAGE" \
 hdiutil verify "$DMG"
 rm -rf "$DMG_STAGE"
 
-rm -f "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
-shasum -a 256 "$PUBLISH/YilaiCodexSwitcher-macOS-universal.zip"
+rm -f "$PUBLISH/YilaiCodexSwitcher-v${VERSION}-macOS-universal.zip"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$PUBLISH/YilaiCodexSwitcher-v${VERSION}-macOS-universal.zip"
+shasum -a 256 "$PUBLISH/YilaiCodexSwitcher-v${VERSION}-macOS-universal.zip"
 shasum -a 256 "$DMG"

@@ -12,6 +12,9 @@
 
 namespace {
 constexpr UINT Done = WM_APP + 1;
+constexpr UINT Progress = WM_APP + 2;
+ULONGLONG operationStarted = 0;
+std::wstring progressStage;
 constexpr int Api = 1001, Reset = 1003, Eye = 1004,
               Logs = 1005;
 constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
@@ -150,6 +153,9 @@ void begin(HWND window, int id) {
   auto action = id == Api        ? app::Action::Configure
                                  : app::Action::Cleanup;
   busy = true;
+  operationStarted = GetTickCount64();
+  progressStage = L"准备操作";
+  SetTimer(window, 1, 1000, nullptr);
   failed = false;
   statusText =
       id == Reset ? L"正在停用旧配置…" : L"正在配置 API 和生图，请稍候…";
@@ -161,7 +167,10 @@ void begin(HWND window, int id) {
     auto result = std::make_unique<Result>();
     result->operation = id;
     try {
-      result->message = app::run(action, app::home(), key);
+      result->message = app::run(action, app::home(), key, true, {}, [window](const std::wstring &stage) {
+        auto value = std::make_unique<std::wstring>(stage);
+        if (PostMessageW(window, Progress, 0, LPARAM(value.get()))) value.release();
+      });
       result->ok = true;
     } catch (const std::exception &error) {
       result->ok = false;
@@ -236,9 +245,22 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
         begin(window, id);
     }
     return 0;
+  case Progress: {
+    std::unique_ptr<std::wstring> stage(reinterpret_cast<std::wstring *>(l));
+    progressStage = *stage;
+    SendMessageW(window, WM_TIMER, 1, 0);
+    return 0;
+  }
+  case WM_TIMER:
+    if (w == 1 && busy) {
+      statusText = progressStage + L" · 已用 " + std::to_wstring((GetTickCount64() - operationStarted) / 1000) + L" 秒";
+      InvalidateRect(window, nullptr, FALSE);
+    }
+    return 0;
   case Done: {
     std::unique_ptr<Result> result(reinterpret_cast<Result *>(l));
     busy = false;
+    KillTimer(window, 1);
     failed = !result->ok;
     statusText = result->message;
     ShowWindow(GetDlgItem(window, Logs), failed ? SW_SHOW : SW_HIDE);
@@ -369,7 +391,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 520};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.6", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.7", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);

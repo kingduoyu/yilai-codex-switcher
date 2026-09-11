@@ -66,10 +66,11 @@ try{
  server=await new Server().init();
  const models=await server.request('model/list',{includeHidden:false,limit:100});
  facts.models=models.data.map(m=>m.model??m.id);
+ assert.deepEqual([...facts.models].sort(),['gpt-5.6-sol','gpt-5.6-terra','gpt-6-astra'].sort());
  for(const id of ['gpt-5.6-sol','gpt-5.6-terra','gpt-6-astra'])assert(facts.models.includes(id));
  const effective=(await server.request('config/read',{includeLayers:false})).config;
  assert.equal(effective.model,'gpt-6-astra');assert.equal(effective.features.image_generation,true);
- assert.equal(effective.model_catalog_json.replaceAll('\\','/'),catalogPath.replaceAll('\\','/'));
+ assert.equal(effective.model_catalog_json.replaceAll('\\','/'),path.join(home,'yilai-model-catalog.json').replaceAll('\\','/'));
  const login=await server.request('account/read',{refreshToken:false});assert.equal(login.requiresOpenaiAuth,false);assert.equal(login.account,null);facts.apiWithoutOfficialLogin=login;
  const t=await server.request('thread/start',{cwd:home,model:'gpt-6-astra',modelProvider:'custom',approvalPolicy:'never',sandbox:'read-only'});
  const id=t.thread.id;facts.threadId=id;await server.turn(id,'Synthetic API configuration verification');
@@ -82,7 +83,7 @@ try{
  await writeFile(path.join(home,'sessions','broken.jsonl'),privateFragment+' invalid JSON');
  await writeFile(path.join(home,'yilai-history-backups','pending.json'),'invalid pending marker');
  const beforeHistory=await snapshots();
- operation('configure',true);
+ operation('configure');
  assert.deepEqual(await snapshots(),beforeHistory,'API configuration/probe touched history/database files');
  assert.equal(await readFile(catalogPath,'utf8'),originalCatalog,'CCS catalog changed');
  assert.equal(await readFile(path.join(home,'config.toml'),'utf8'),configured);
@@ -95,7 +96,7 @@ try{
  const logDir=path.join(home,'yilai-switcher-logs');const logs=(await Promise.all((await readdir(logDir)).map(n=>readFile(path.join(logDir,n),'utf8')))).join('\n');
  for(const secret of [privateFragment,'sk-isolated-test-only','sk-fake-file-credential'])assert(!logs.includes(secret));
  assert(!logs.includes('sync_history')&&!logs.includes('recover_history')&&!logs.includes('undo_history'));
- facts.passed=['API-only configuration and idempotence','CCS three-model catalog bytes retained','API bearer authentication without official login','native image tool and image header','real mock response via configured API','actual source probe isolates databases and leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','logs contain no history operations or credentials'];
+ facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','logs contain no history operations or credentials'];
  facts.status='passed';await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}
