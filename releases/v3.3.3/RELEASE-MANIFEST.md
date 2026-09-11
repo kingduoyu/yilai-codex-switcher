@@ -1,6 +1,9 @@
 # v3.3.3 Release Manifest
 
 Date: 2026-09-11 (Asia/Shanghai).
+Publication confirmed: 2026-09-11T12:23:17Z (UTC). GitHub latest is v3.3.3, neither draft nor prerelease. All four remote assets matched local digest, byte length and uploaded state before publication; final published application assets were rechecked. Local publish/ binaries, checksum file and UI previews were hash-verified.
+Release tag commit: 20dfd264f995a6dd879b3258deb542ac9db8f9f0.
+
 Application source commit (both platforms): 685e43cb3f4e24e8bf08d0ff6758eb21e50a6bff. Subsequent release-tag changes are release documentation/checksums only.
 
 ## Scope
