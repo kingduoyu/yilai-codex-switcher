@@ -192,7 +192,18 @@ void capture(HWND window, const wchar_t *filename) {
   HDC mem = CreateCompatibleDC(dc);
   HBITMAP image = CreateCompatibleBitmap(dc, r.right, r.bottom);
   auto prior = SelectObject(mem, image);
-  PrintWindow(window, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+  FillRect(mem, &r, background);
+  // WM_PRINT paints every child synchronously; DWM capture can miss controls
+  // before the first message loop has completed.
+  RECT outer;
+  GetWindowRect(window, &outer);
+  POINT clientOrigin{0, 0};
+  ClientToScreen(window, &clientOrigin);
+  SetViewportOrgEx(mem, outer.left - clientOrigin.x,
+                   outer.top - clientOrigin.y, nullptr);
+  SendMessageW(window, WM_PRINT, WPARAM(mem),
+               PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+  SetViewportOrgEx(mem, 0, 0, nullptr);
   Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
   Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
   Microsoft::WRL::ComPtr<IWICStream> stream;

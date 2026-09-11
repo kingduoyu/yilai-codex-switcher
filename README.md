@@ -36,7 +36,7 @@ CCS 的模型获取和目录由其配置决定，并非本工具自动更新。v
 
 Windows：pwsh -File Windows/build.ps1，随后执行 dist/windows/YilaiCodexSwitcher.exe --self-test。
 
-macOS：bash build-macos.sh；正式 DMG/ZIP 由 Build macOS app 工作流构建、执行自测并生成界面截图。
+macOS：`PUBLISH_DIR="$PWD/dist" bash build-macos.sh`；正式 DMG/ZIP 由 Build macOS app 工作流构建、执行自测并生成界面截图。
 
 真实运行时集成验证（Windows，需 Node.js、Python 及 LLVM-MinGW）：`pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>`。测试使用隔离数据目录和本机模拟 Responses 接口，不读取真实登录，不调用付费模型。覆盖模型列表、内置生图工具声明、旧对话列表/读取/继续、撤销保留新消息、官方配置及模拟凭据更换；不代表已验证生产服务生成图片。
 
