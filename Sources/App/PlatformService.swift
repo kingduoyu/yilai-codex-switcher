@@ -6,7 +6,7 @@ import Diagnostics
 import OperationGuard
 import ConfigSources
 
-enum Operation: String, CaseIterable { case images, configure, official, sync, undo, cleanup }
+enum Operation: String, CaseIterable { case images, configure, sync, undo, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -78,6 +78,7 @@ private final class DiagnosticLog {
 final class PlatformService {
     let root: URL
     private let files = FileManager.default
+    private(set) var historyWarning = false
 
     init(root: URL? = nil) {
         let env = ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
@@ -210,6 +211,7 @@ final class PlatformService {
     }
 
     func run(_ operation: Operation, key: String = "", requireClosed: Bool = true, runtimeOverride: String = "") throws -> String {
+        historyWarning = false
         let log = DiagnosticLog(root: root, operation: operation, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
         do {
             log.event("acquire_lock", "Acquiring exclusive operation lock for this Codex home")
@@ -221,7 +223,7 @@ final class PlatformService {
             }
             defer { yilai_operation_unlock(lock) }
             let result = try runOperation(operation, key: key, requireClosed: requireClosed, runtimeOverride: runtimeOverride, log: log)
-            log.finish(success: true, message: "Operation completed")
+            log.finish(success: true, message: historyWarning ? result : "Operation completed")
             return result
         } catch {
             var message = log.failureMessage(operationErrorDescription(error))
@@ -236,10 +238,16 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
-        if operation == .configure || operation == .official {
+        var historyIssue: String?
+        if operation == .configure {
             log.event("recover_history", "Checking and recovering any interrupted history transaction")
-            try recoverHistory()
-            log.event("recover_history", "Pending history recovery completed")
+            do {
+                try recoverHistory()
+                log.event("recover_history", "Pending history recovery completed")
+            } catch {
+                historyIssue = log.sanitized(operationErrorDescription(error))
+                log.event("history_warning", "History recovery incomplete; preserving the pending transaction and continuing API setup: \(historyIssue!)")
+            }
         }
         if operation == .sync || operation == .undo {
             log.event("sync_history", operation == .undo ? "Restoring local history classification" : "Synchronizing local history")
@@ -263,7 +271,7 @@ final class PlatformService {
         }
         var sources: OpaquePointer?
         defer { if let sources { yilai_sources_finish(sources) } }
-        let switching = operation == .configure || operation == .official
+        let switching = operation == .configure
         if switching && (requireClosed || !runtimeOverride.isEmpty) {
             log.event("prepare_sources", "Reading effective configuration layers using the installed runtime")
             var sourceError: UnsafeMutablePointer<CChar>?
@@ -296,7 +304,6 @@ final class PlatformService {
         switch operation {
         case .images: action = Int32(YILAI_ENHANCE)
         case .configure: action = Int32(YILAI_CONFIGURE)
-        case .official: action = Int32(YILAI_OFFICIAL)
         default: throw AppError(message: "不支持的配置操作。")
         }
         var failure: UnsafeMutablePointer<CChar>?
@@ -345,14 +352,12 @@ final class PlatformService {
                     var sourceError: UnsafeMutablePointer<CChar>?
                     defer { if let sourceError { yilai_config_free(sourceError) } }
                     let verified = token.withCString {
-                        yilai_sources_verify(sources, operation == .official ? 1 : 0, $0, &sourceError)
+                        yilai_sources_verify(sources, $0, &sourceError)
                     }
                     guard verified != 0 else {
                         throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
                     }
                 }
-                log.event("sync_history", "Synchronizing local history")
-                _ = try history()
             }
         } catch {
             log.event("switch_failed", operationErrorDescription(error))
@@ -399,12 +404,24 @@ final class PlatformService {
             }
             throw error
         }
-        switch operation {
-        case .images: return "生图已启用。请重新打开 Codex。"
-        case .configure: return "已切换到易来 API，生图和本地历史已就绪。请重新打开 Codex。"
-        case .official: return "已切回官方设置，本地历史已同步。请重新打开 Codex 并登录官方账号。"
-        default: return "操作完成。"
+        // API configuration is committed after authentication/source verification.
+        // History is independent: its failure must never revert a working connection.
+        if operation == .configure {
+            if historyIssue == nil {
+                log.event("sync_history", "Synchronizing local history")
+                do { _ = try history() }
+                catch {
+                    historyIssue = log.sanitized(operationErrorDescription(error))
+                    log.event("history_warning", "API configuration remains active: \(historyIssue!)")
+                }
+            }
+            if let historyIssue {
+                historyWarning = true
+                return "API 已配置，历史同步未完成：\(historyIssue)。生图已启用，可重新打开 Codex；请查看日志排查历史问题。"
+            }
+            return "已切换到易来 API，生图和本地历史已就绪。请重新打开 Codex。"
         }
+        return operation == .images ? "生图已启用。请重新打开 Codex。" : "操作完成。"
     }
 }
 
@@ -575,28 +592,32 @@ func selfTest() throws {
     try check(try failed && text("config.toml") == enhanced && text("auth.json") == auth, "Locked auth switch rollback failed")
     try check(try text("sessions/active.jsonl") == session, "Locked auth changed history")
 
-    // A sync validation failure occurs after auth deletion: both bytes must return.
+    // History validation fails after API setup commits; the connection stays active.
     try put("sessions/broken.jsonl", "invalid json\n")
-    for operation in [Operation.configure, .official] {
-        failed = false
-        do { _ = try service.run(operation, key: "sk-test-key", requireClosed: false) }
-        catch { failed = true }
-        try check(try failed && text("config.toml") == enhanced && text("auth.json") == auth, "Sync failure did not restore config/auth")
-        try check(try text("sessions/active.jsonl") == session, "Sync failure altered history")
-    }
+    let historyWarning = try service.run(.configure, key: "sk-test-key", requireClosed: false)
+    try check(service.historyWarning && historyWarning.contains("API 已配置，历史同步未完成"), "History failure was not reported as a warning")
+    try check(service.mode() == "易来 API" && !files.fileExists(atPath: authPath), "History failure reverted the API connection")
+    try check(try text("config.toml").contains("image_generation = true"), "History warning lost image support")
+    try check(try text("sessions/active.jsonl") == session, "Sync validation failure altered history")
     try files.removeItem(at: root.appendingPathComponent("sessions/broken.jsonl"))
+
+    // A broken pending-history journal cannot block API setup or be overwritten.
+    try put("config.toml", enhanced)
+    try put("auth.json", auth)
+    try put("yilai-history-backups/pending.json", "invalid pending journal\n")
+    let recoveryWarning = try service.run(.configure, key: "sk-test-key", requireClosed: false)
+    try check(service.historyWarning && recoveryWarning.contains("API 已配置，历史同步未完成"), "History recovery failure blocked API setup")
+    try check(service.mode() == "易来 API" && !files.fileExists(atPath: authPath), "History recovery failure reverted the API connection")
+    try check(try text("yilai-history-backups/pending.json") == "invalid pending journal\n" && text("sessions/active.jsonl") == session, "Failed recovery was overwritten by fresh history sync")
+    try files.removeItem(at: root.appendingPathComponent("yilai-history-backups/pending.json"))
+    try put("archived_sessions/local.jsonl", record("archived", "openai"))
     _ = try service.run(.configure, key: "sk-test-key", requireClosed: false)
+    try check(!service.historyWarning, "Completed history sync retained an old warning")
     try check(service.mode() == "易来 API", "API switch did not select Yilai")
     try check(!files.fileExists(atPath: authPath), "API switch retained auth")
     try check(try provider("sessions/active.jsonl") == "custom", "API switch did not sync history")
     try check(try text("config.toml").contains("image_generation = true"), "API switch did not enable images")
-
-    try put("auth.json", auth)
-    try put("archived_sessions/official.jsonl", record("archived", "openai"))
-    _ = try service.run(.official, requireClosed: false)
-    try check(service.mode() == "OpenAI 官方", "Official switch did not select official")
-    try check(!files.fileExists(atPath: authPath), "Official switch retained auth")
-    try check(try provider("archived_sessions/official.jsonl") == "custom", "Official switch did not sync archived history")
+    try check(try provider("archived_sessions/local.jsonl") == "custom", "API switch did not sync archived history")
     try check(try text("auth.json.yilai-disabled") == "keep disabled auth" && text("auth.json.yilai-session-test") == "keep session auth" && text("yilai-switcher-backup/manifest.json") == "keep manifest", "Switch touched unrelated backups")
 
     // Reset is a reversible rename; it must preserve config bytes, auth and history.
@@ -641,6 +662,6 @@ func selfTest() throws {
         .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
     try check(!logFiles.isEmpty, "Operation diagnostics were not created")
     let logText = try logFiles.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
-    try check(logText.contains("rollback_auth") && logText.contains("failure"), "Failure/rollback diagnostics missing")
+    try check(logText.contains("rollback_config") && logText.contains("failure") && logText.contains("history_warning"), "Failure/rollback diagnostics missing")
     try check(!logText.contains("sk-test-key"), "Diagnostics leaked the API key")
 }

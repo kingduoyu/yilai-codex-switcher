@@ -1,57 +1,42 @@
-# 易来 Codex 配置器 v3.3.4
+# 易来 Codex 配置器 v3.3.5
 
-Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 Codex 即可。
+Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。官方连接切换交给 CCS，本工具不提供切回官方或恢复旧配置的入口。
 
 ## 使用
 
 1. 完全退出 Codex 和 CC-Switch，包括后台进程。
-2. 使用易来时，填写 API Key，点击 **切换到易来 API**。生图和本地历史同步会自动完成。
-3. 使用官方时，点击 **切换回官方设置**，重新打开 Codex 并登录。
+2. 填写 API Key，点击 **配置易来 API · 启用生图**，完成后重新打开 Codex。
+3. 需要官方连接时，使用 CCS 切换。
 
-下载本仓库 Releases 中的 Windows EXE 或 macOS 通用 DMG / ZIP。支持 Windows 10/11 x64、macOS 13+ Intel / Apple Silicon。macOS 为 ad-hoc 签名，首次打开可能需要右键“打开”。
+重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
 
-界面底部的 **重置配置** 仅供切换无效时使用。点击即把 config.toml 改名为 config.toml.disabled-唯一后缀，不弹确认、不删除原文件、不自动恢复它，也不碰登录和历史。重置后重新填写 Key 并切换。
+## 配置与兼容
 
-## 错误反馈
+- 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并删除当前 CODEX_HOME/auth.json。
+- 保留用户模型、推理档位、CCS 模型目录、MCP、权限等无关配置；不修改 CCS 的开关、账号数据库或软件。
+- API 写入前通过已安装 Codex 的 config/read 识别实际加载的来源，备份并移除已加载的更高优先级连接覆盖，写入后回读验证。配置、认证或来源核验失败时撤销本次未完成的配置操作。
+- 检测覆盖默认用户目录和桌面记录的当前活动本地项目。未受信任项目不修改；未加载的 profile 不扫描；任意独立 CLI --profile/-c、未来项目及系统/组织策略不在自动处理范围。
+- Windows 优先采用桌面端版本目录中的运行时，旧 bin/codex.exe 仅作为后备。macOS 使用其应用包运行时。
+- 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
 
-每次操作会自动写入 CODEX_HOME/yilai-switcher-logs。失败时界面显示具体阶段和原因，并出现“查看日志”入口；可将对应日志发给支持人员。日志包含版本、平台、操作步骤、错误与回滚结果，不记录配置全文、登录内容或对话正文，Key/令牌会脱敏。日志写入失败不会改变切换操作的成败；操作失败且日志无法完整保存时，会在错误信息中明确说明。这些日志仅记录配置器操作，不采集 Codex 后续聊天或网络请求；切换不会验证 Key 额度或服务端模型权限。
+## 本地历史与日志
 
-## 切换行为
+CCS 已统一为 custom 的本地历史会保持该归属，我们配置 API 不会关闭 CCS 的历史统一开关。CCS 的迁移完成标记保存在它自己的设置中；不能把开关理解为永久自动迁移所有以后产生的其他归属记录。
 
-- 易来使用 CCS 兼容的 custom provider，在供应商节点写入 API Key，设置 requires_openai_auth=false，并启用生图。
-- Windows 优先使用桌面端版本目录内的运行时，旧版 bin/codex.exe 仅作为后备；macOS 使用其应用包运行时。读取失败显示所用路径、RPC 码及安全分类。
-- 两个主切换在写配置前调用已安装 Codex 的 config/read，读取实际加载层及字段来源；默认检查当前用户目录，以及桌面记录的 active-workspace-roots 中可访问的本机活动项目。
-- 对用户配置之上、已加载的项目/profile文件，先备份，再移除连接选择、连接覆盖和生图开关；保留模型、目录、MCP、权限及未使用的其他配置。存在但未受信任的项目层不修改，不扫描未加载的 profile 文件。
-- 写入新连接后再次读取实际结果，核验 provider、地址、认证及 API 生图配置；核验失败不进入历史同步，恢复本次配置/auth/来源改动。源码层备份位于 CODEX_HOME/yilai-source-backups，已知中断记录下次切换自动处理。
-- 核验针对本机默认启动及当前活动项目；独立 CLI 的 --profile/-c、未来新项目或之后更改的启动参数不在已验证范围。当前运行时 app-server 不能选择 CLI 独立 profile；不会以扫描文件代替实际加载结果。不可识别来源、不可访问的活动项目或不可修改的覆盖会明确报错，不宣称永远最高优先级。
-- 两个切换按钮都会删除当前 CODEX_HOME/auth.json，再自动同步已有本地历史。默认使用当前用户 .codex；设置 CODEX_HOME 时跟随它。
-- 采用 CCS v3.20.2 关闭保留官方登录的认证方式：独立 bearer token + 关闭官方认证 + 删除登录文件。不会写空 auth 对象、不会锁文件、不扫描旧登录档案，也不清理系统钥匙串或 Windows 凭据管理器。
-- 切换保留模型和 CCS 模型目录，移除当前连接的强制登录/地址覆盖。官方使用原生认证，不保留第三方 token/地址/生图占位请求头。TOML 会规范化，原注释不保留。
-- 同一 CODEX_HOME 的完整操作互斥，多个配置器同时操作时会拒绝后来的操作；锁随进程退出释放。
-- 切换前自动检查上次中断的历史同步，完成收尾或恢复后继续；未知状态或无法安全恢复时保留现场并报错。重置仍只停用配置，不触发历史恢复。
-- 相同连接重复切换不增加备用 provider；只有其他 profile 确实需要旧连接时才保留。已有旧备用节点不自动批量删除。
-- 只在所有步骤完成后显示切换成功。普通写入、登录删除或历史同步失败时，还原本次连接和登录改动；历史核心负责自身回滚。不要在操作中启动 Codex/CCS 或强制结束进程。
+API 配置后尝试同步已有本地 sessions、archived_sessions 和 state_5.sqlite，保留正文、标题、归档状态及分叉历史。支持 sqlite_home / CODEX_SQLITE_HOME。历史同步失败或旧历史恢复未完成时，保留已成功的 API 配置并显示警告和日志入口，不把历史问题当作连接失败；未完成的历史事务与备份保留供后续处理。
 
-## 本地历史
+日志在 CODEX_HOME/yilai-switcher-logs，记录阶段、成功、失败、警告和回滚，不写密钥、配置全文或对话正文。RPC 拒绝显示安全分类、错误码、运行时路径和上下文。日志不采集后续聊天请求，不验证额度和服务器模型权限。
 
-切换时备份并同步 sessions、archived_sessions 及 state_5.sqlite 的会话归属，保留消息、标题与归档状态。只共享同一 CODEX_HOME 已有的本地记录，不下载其他账号的云端会话。
+历史备份在 yilai-history-backups，来源备份在 yilai-source-backups。这些用于操作恢复，与重置后停用的配置文件无关；停用配置不会被重新启用。只处理已有本地历史，不下载其他账号云端记录。
 
-历史备份位于 CODEX_HOME/yilai-history-backups，包含迁移清单、会话文件与数据库备份。支持 sqlite_home / CODEX_SQLITE_HOME。损坏历史、未知数据库版本或并发改动会使同步失败并明确报错，保留现场与备份。
+## 开发与验证
 
-以后若用 CCS 切换，开启 CCS 自己的“统一 Codex 会话历史”，才能持续使用同一历史分类。本工具不修改 CCS 软件、设置或账号库。
+共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；历史：Sources/HistorySync；操作锁：Sources/OperationGuard；日志：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
-## 验证与开发
+Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 
-配置规则：Sources/ConfigRewrite。生效来源识别、事务和运行时探测：Sources/ConfigSources。历史核心：Sources/HistorySync。完整操作互斥：Sources/OperationGuard。Windows 界面与文件操作：Windows。macOS：Sources/App。
+运行时回归：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。来源回归：python Tests/source-integration.py dist/test-driver.exe --auto-runtime。测试采用隔离目录和本机模拟服务，不调用付费模型。运行时发现与诊断回归见 Tests/runtime-discovery.py。
 
-Windows：pwsh -File Windows/build.ps1，然后运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py 验证真实失败后的日志按钮状态。
+macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；正式通用版由 Build macOS app 工作流构建、执行自测、校验 DMG 并截图。
-
-真实运行时验证：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。需要 Node.js、Python 和 LLVM-MinGW。测试使用独立数据目录与本机模拟 Responses 服务，验证 auth 删除后无需官方登录、API Key 实际请求认证、内置生图工具、自动同步与继续对话；不调用付费模型。
-
-版本事实见 releases/v3.3.4/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
-
-新增来源集成验证：python Tests/source-integration.py dist/test-driver.exe <codex.exe绝对路径>。使用合成受信/未受信项目、嵌套覆盖与故障历史，不调用付费模型。
-
-自动发现完整来源回归：python Tests/source-integration.py dist/test-driver.exe --auto-runtime。独立查找/诊断回归为 Tests/runtime-discovery.py，使用 Tests/runtime-probe-driver.cpp 构建的辅助程序与新旧实际运行时，不修改用户配置。
+版本事实见 releases/v3.3.5/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。

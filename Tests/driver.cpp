@@ -7,9 +7,9 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   try {
     std::wstring name(argv[1]);
+    if (name != L"images" && name != L"configure" && name != L"sync" && name != L"undo" && name != L"cleanup") return 2;
     auto action = name == L"images"      ? app::Action::Images
                   : name == L"configure" ? app::Action::Configure
-                  : name == L"official"  ? app::Action::Official
                   : name == L"sync"      ? app::Action::Sync
                   : name == L"undo"      ? app::Action::Undo
                                          : app::Action::Cleanup;

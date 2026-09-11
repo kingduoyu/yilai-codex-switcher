@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
     def visit(hwnd, unused):
         pid = w.DWORD()
         u.GetWindowThreadProcessId(hwnd, c.byref(pid))
-        if pid.value == process.pid and u.GetDlgItem(hwnd, 1002):
+        if pid.value == process.pid and u.GetDlgItem(hwnd, 1001):
             found.append(hwnd)
         return True
     try:
@@ -48,17 +48,24 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
         assert found, "Application window did not start"
         window = found[0]
         logs = u.GetDlgItem(window, 1005)
-        official = u.GetDlgItem(window, 1002)
-        assert logs and official, "Expected controls missing"
+        api = u.GetDlgItem(window, 1001)
+        assert logs and api, "Expected controls missing"
+        assert not u.GetDlgItem(window, 1002), "Removed official button remains"
+        u.FindWindowExW.argtypes = [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR]
+        u.FindWindowExW.restype = w.HWND
+        edit = u.FindWindowExW(window, None, "Edit", None)
+        assert edit, "API input missing"
+        key = c.c_wchar_p("synthetic-ui-only")
+        u.SendMessageW(edit, 0x000C, 0, c.cast(key, c.c_void_p).value)
         for attempt in range(2):
-            u.SendMessageW(window, 0x111, 1002, official)
+            u.SendMessageW(window, 0x111, 1001, api)
             for _ in range(150):
-                if u.GetWindowLongW(logs, -16) & 0x10000000 and u.IsWindowEnabled(official):
+                if u.GetWindowLongW(logs, -16) & 0x10000000 and u.IsWindowEnabled(api):
                     break
                 time.sleep(0.1)
             assert u.GetWindowLongW(logs, -16) & 0x10000000, "Failure did not reveal logs"
             assert u.IsWindowEnabled(logs), "Visible log button is disabled after failure"
-            assert u.IsWindowEnabled(official), "Switch button did not recover"
+            assert u.IsWindowEnabled(api), "Switch button did not recover"
             assert (home / "config.toml").read_text(encoding="utf8") == original
         entries = [json.loads(line) for log in (home / "yilai-switcher-logs").glob("*.log")
                    for line in log.read_text(encoding="utf8").splitlines()]

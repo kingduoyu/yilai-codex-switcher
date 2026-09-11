@@ -259,7 +259,7 @@ struct Meta {
   Json record;
   bool bom = false, cr = false;
 };
-Meta metadata(const std::string &bytes) {
+Meta metadata(const std::string &bytes, const fs::path &path = {}) try {
   Meta result;
   bool found = false;
   size_t start = 0;
@@ -274,27 +274,40 @@ Meta metadata(const std::string &bytes) {
     if (cr)
       parse.pop_back();
     if (!parse.empty()) {
-      auto value = Json::parse(parse);
-      ensure(value.is_object(), "Invalid JSONL record");
+      // Parse without exception snippets: history text must not enter logs.
+      auto value = Json::parse(parse, nullptr, false);
+      ensure(!value.is_discarded() && value.is_object(), "Invalid JSONL record");
+      ensure(!value.contains("type") || value["type"].is_string(),
+             "Invalid JSONL record type");
       if (value.value("type", std::string()) == "session_meta") {
-        ensure(!found && value.contains("payload") &&
-                   value["payload"].is_object(),
-               "Missing or duplicate session metadata");
-        found = true;
+        ensure(value.contains("payload") && value["payload"].is_object(),
+               "Missing session metadata payload");
         auto &payload = value["payload"];
         ensure(payload.contains("id") && payload["id"].is_string(),
                "Invalid session ID");
         ensure(!payload.contains("model_provider") ||
                    payload["model_provider"].is_string(),
                "Invalid session provider");
-        result = {start, end - start, line, payload["id"].get<std::string>(),
-                  value, bom,         cr};
+        // Codex uses the FIRST SessionMeta as this rollout's identity.
+        // Later records can be inherited fork history with different IDs and
+        // providers; validate them but preserve their original bytes.
+        if (!found) {
+          result = {start, end - start, line, payload["id"].get<std::string>(),
+                    value, bom,         cr};
+          found = true;
+        }
       }
     }
     start = end + 1;
   }
   ensure(found, "Session metadata not found");
   return result;
+} catch (const std::exception &e) {
+  std::string location = path.empty() ? "" : " [" + utf8(path) + "]";
+  for (char &c : location)
+    if (static_cast<unsigned char>(c) < 32)
+      c = '?';
+  throw std::runtime_error("Invalid history metadata" + location + ": " + e.what());
 }
 std::string changedLine(const Meta &m, const Json &provider) {
   auto value = m.record;
@@ -472,7 +485,7 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
     ensure(fs::exists(file),
            "A synchronized history file is missing; no changes were made");
     auto bytes = read(file);
-    auto meta = metadata(bytes);
+    auto meta = metadata(bytes, file);
     Json fromProvider = currentProvider(meta), toProvider = "custom";
     if (!restore) {
       ensure(seenIds.insert(meta.id).second,
@@ -576,7 +589,7 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
   write(backup / "config.toml", oldConfig);
   for (const auto &edit : plan["files"]) {
     auto bytes = read(from(edit.at("path")));
-    auto meta = metadata(bytes);
+    auto meta = metadata(bytes, from(edit.at("path")));
     ensure(meta.raw == edit["old_line"] && meta.offset == edit["offset"] &&
                bytes.size() == edit["size"],
            "History changed during backup");
@@ -670,7 +683,7 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
         auto &edit = plan["files"][*it];
         auto p = from(edit.at("path"));
         auto bytes = read(p);
-        auto meta = metadata(bytes);
+        auto meta = metadata(bytes, p);
         ensure(meta.raw == edit["new_line"],
                "Metadata changed during rollback");
         bytes.replace(meta.offset, meta.length,
@@ -910,7 +923,12 @@ void selfTest() {
     Json meta = {
         {"type", "session_meta"},
         {"payload", {{"id", std::to_string(i)}, {"model_provider", provider}}}};
-    write(file, meta.dump() + "\r\n{\"type\":\"event_msg\",\"payload\":{"
+    if (i == 0)
+      meta["payload"]["forked_from_id"] = "1";
+    const std::string inherited = i == 0
+        ? "{\"type\":\"session_meta\", \"payload\":{\"id\":\"1\",\"model_provider\":\"parent-provider\"}}\r\n"
+        : "";
+    write(file, meta.dump() + "\r\n" + inherited + "{\"type\":\"event_msg\",\"payload\":{"
                               "\"message\":\"unchanged text\"}}\n");
   }
   {
@@ -994,6 +1012,12 @@ void selfTest() {
     }
   }
   auto synced = operate(home, false);
+  const auto forkSynced = read(home / "sessions/0.jsonl");
+  ensure(forkSynced.substr(forkSynced.find('\n') + 1) ==
+             before.substr(before.find('\n') + 1) &&
+             metadata(forkSynced).id == "0" &&
+             currentProvider(metadata(forkSynced)) == "custom",
+         "Fork migration changed inherited metadata or canonical identity");
   ensure(synced["files"] == 4 && synced["rows"] == 5, "Wrong migration count");
   ensure(currentProvider(metadata(read(home / "archived_sessions/3.jsonl"))) ==
              "custom",
@@ -1016,8 +1040,8 @@ void selfTest() {
     db.exec("INSERT INTO threads VALUES('new','custom','new thread',0)");
   }
   operate(home, true);
-  ensure(read(home / "sessions/0.jsonl").find(message) != std::string::npos,
-         "Restore lost new messages");
+  ensure(read(home / "sessions/0.jsonl") == before + message,
+         "Restore changed fork metadata or lost new messages");
   {
     Db db(home / "state_5.sqlite");
     auto data = rows(db);
@@ -1106,6 +1130,23 @@ void selfTest() {
   ensure(failed && read(home / "config.toml") == config,
          "Malformed history modified configuration");
   fs::remove(home / "sessions/broken.jsonl");
+  // Already-custom canonical metadata must not hide invalid history later in
+  // the file, and errors must identify the file without echoing its content.
+  const std::string privateTail = "private-conversation-sentinel";
+  const std::string unifiedHead =
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"tail-test\",\"model_provider\":\"custom\"}}\n";
+  for (const auto &tail : {privateTail,
+                          std::string("{\"type\":\"session_meta\",\"payload\":{}}")}) {
+    failed = false;
+    try {
+      metadata(unifiedHead + tail, home / "sessions/broken.jsonl");
+    } catch (const std::exception &e) {
+      const std::string error = e.what();
+      failed = error.find("broken.jsonl") != std::string::npos &&
+               error.find(privateTail) == std::string::npos;
+    }
+    ensure(failed, "Malformed fork tail was accepted or leaked diagnostic content");
+  }
   const std::string missingProvider =
       "{\"type\":\"session_meta\",\"payload\":{\"id\":\"missing\"}}\n";
   write(home / "sessions/missing.jsonl", missingProvider);

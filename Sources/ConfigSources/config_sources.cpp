@@ -258,7 +258,7 @@ extern "C" int yilai_sources_apply(YilaiConfigSources *c, char **error) {
   } catch (const std::exception &e) { failure(error, e.what()); } catch (...) { failure(error, "配置来源清理失败。"); }
   return 0;
 }
-extern "C" int yilai_sources_verify(YilaiConfigSources *c, int official, const char *key, char **error) {
+extern "C" int yilai_sources_verify(YilaiConfigSources *c, const char *key, char **error) {
   if (error) *error = nullptr;
   try {
     require(c != nullptr, "缺少来源计划。");
@@ -267,15 +267,10 @@ extern "C" int yilai_sources_verify(YilaiConfigSources *c, int official, const c
       require(config.value("model_provider", "openai") == "custom", "连接选择仍被覆盖，未确认切换成功：" + text(cwd));
       const auto &provider = config.at("model_providers").at("custom");
       require(!provider.contains("env_key") || provider["env_key"].is_null() || provider["env_key"] == "", "认证仍受其他来源的环境变量配置影响。");
-      require(provider.value("requires_openai_auth", false) == bool(official), "认证方式仍被其他来源覆盖：" + text(cwd));
-      if (official) {
-        require(!provider.contains("base_url") || provider["base_url"].is_null(), "官方连接仍残留其他来源的地址覆盖。");
-        require(!provider.contains("experimental_bearer_token") || provider["experimental_bearer_token"].is_null(), "官方连接仍残留其他来源的令牌覆盖。");
-      } else {
-        require(provider.value("base_url", "") == "https://api.yilai-ai.com" && provider.value("experimental_bearer_token", "") == (key ? key : ""), "地址或认证凭据未按本次配置生效。");
-        require(config.at("features").value("image_generation", false), "生图开关仍被其他来源覆盖。");
-        require(provider.at("http_headers").value("x-openai-actor-authorization", "") == "local-image-extension", "生图连接设置未生效。");
-      }
+      require(!provider.value("requires_openai_auth", false), "认证方式仍被其他来源覆盖：" + text(cwd));
+      require(provider.value("base_url", "") == "https://api.yilai-ai.com" && provider.value("experimental_bearer_token", "") == (key ? key : ""), "地址或认证凭据未按本次配置生效。");
+      require(config.at("features").value("image_generation", false), "生图开关仍被其他来源覆盖。");
+      require(provider.at("http_headers").value("x-openai-actor-authorization", "") == "local-image-extension", "生图连接设置未生效。");
       for (const char *field : {"forced_login_method", "forced_chatgpt_workspace_id", "openai_base_url", "chatgpt_base_url"})
         require(!loaded.value("origins", Json::object()).contains(field) || !config.contains(field) || config[field].is_null() || config[field] == "", std::string("连接仍受覆盖字段影响：") + field);
     }
@@ -298,8 +293,8 @@ extern "C" int yilai_sources_rollback(YilaiConfigSources *c, char **error) {
   return 0;
 }
 extern "C" void yilai_sources_finish(YilaiConfigSources *c) {
-  // This is reached after the outer history operation succeeds. Verification
-  // alone is not a commit: a crash during later rollback must remain recoverable.
+  // API configuration is committed independently of optional history sync.
+  // Verification alone is not a commit while configuration rollback is possible.
   if (c && c->verified && c->applied) {
     try {
       c->manifest["status"] = "complete";

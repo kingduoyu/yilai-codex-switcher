@@ -7,8 +7,7 @@ enum {
   YILAI_ENHANCE = 0,
   YILAI_CONFIGURE = 1,
   YILAI_CLEANUP = 2,
-  YILAI_UNIFY_HISTORY = 3,
-  YILAI_OFFICIAL = 4
+  YILAI_UNIFY_HISTORY = 3
 };
 char *yilai_apply_config(const char *existing, const char *key, int action,
                          char **error);

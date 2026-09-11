@@ -58,8 +58,7 @@ def run(home, action='configure', success=True):
 try:
     fresh=root/'fresh-home';fresh.mkdir()
     run(fresh)
-    run(fresh,'official')
-    facts.append('first-use empty user directory supports API and official switching with effective verification')
+    facts.append('first-use empty user directory supports API configuration with effective verification')
     home,source,current=setup('trusted',nested=True)
     unused=(home/'unused.config.toml').read_bytes()
     run(home)
@@ -71,8 +70,7 @@ try:
     assert (home/'unused.config.toml').read_bytes()==unused
     assert not (home/'auth.json').exists()
     assert (home/'yilai-source-backups').exists()
-    run(home,'official')
-    facts.append('trusted parent and child overrides removed; unrelated settings and unused profile retained; API/official actual values verified')
+    facts.append('trusted parent and child overrides removed; unrelated settings and unused profile retained; API actual values verified')
 
     home,source,current=setup('untrusted',trusted=False)
     before=source.read_bytes()
@@ -83,10 +81,12 @@ try:
     home,source,current=setup('rollback')
     before=source.read_bytes();config=(home/'config.toml').read_bytes();auth=(home/'auth.json').read_bytes()
     (home/'sessions').mkdir();(home/'sessions/broken.jsonl').write_text('malformed-history',encoding='utf8')
-    failed,logs=run(home,success=False)
-    assert source.read_bytes()==before and (home/'config.toml').read_bytes()==config and (home/'auth.json').read_bytes()==auth
-    assert 'verify_sources' in logs and 'rollback_sources' in logs
-    facts.append('history failure restores project override, user config and auth after successful source verification')
+    completed,logs=run(home)
+    assert source.read_bytes()!=before and (home/'config.toml').read_bytes()!=config and not (home/'auth.json').exists()
+    assert 'verify_sources' in logs and 'history_warning' in logs and 'rollback_sources' not in logs
+    assert (home/'sessions/broken.jsonl').read_text(encoding='utf8')=='malformed-history'
+    assert not (home/'yilai-source-backups/pending.json').exists()
+    facts.append('history warning preserves verified API configuration, commits source edits and retains broken history unchanged')
 
     home,source,current=setup('invalid-project')
     source.write_text('[invalid TOML',encoding='utf8')

@@ -10,7 +10,7 @@ typedef struct YilaiConfigSources YilaiConfigSources;
 YilaiConfigSources *yilai_sources_prepare(const char *home, const char *runtime, char **error);
 char *yilai_sources_summary(const YilaiConfigSources *context);
 int yilai_sources_apply(YilaiConfigSources *context, char **error);
-int yilai_sources_verify(YilaiConfigSources *context, int official, const char *key, char **error);
+int yilai_sources_verify(YilaiConfigSources *context, const char *key, char **error);
 int yilai_sources_rollback(YilaiConfigSources *context, char **error);
 /* Finishes successful work or releases an already rolled-back context. */
 void yilai_sources_finish(YilaiConfigSources *context);

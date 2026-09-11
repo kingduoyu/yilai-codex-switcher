@@ -162,7 +162,8 @@ std::wstring mode(const fs::path &root) {
 }
 static std::wstring perform(Action action, const fs::path &root,
                             const std::wstring &input, bool closed,
-                            OperationLog &log, const fs::path &runtimeOverride) {
+                            OperationLog &log, const fs::path &runtimeOverride, bool &historyWarning) {
+  bool historyReady = true;
   log.step("lock_operation", "检查其他配置器操作");
   char *lockError = nullptr;
   std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> operationLock(
@@ -198,15 +199,19 @@ static std::wstring perform(Action action, const fs::path &root,
            detail ? detail.get() : "History operation failed");
     return action == Action::Sync ? L"本地历史已同步。" : L"已撤销历史同步。";
   }
-  if (action == Action::Configure || action == Action::Official) {
+  if (action == Action::Configure) {
     log.step("recover_history", "恢复上次未完成的历史操作");
     char *recoveryError = nullptr;
     Buffer recovered(yilai_recover_history(utf8(root.wstring()).c_str(), &recoveryError), yilai_config_free);
     Buffer recoveryDetail(recoveryError, yilai_config_free);
-    ensure(recovered != nullptr, recoveryDetail ? recoveryDetail.get() : "历史恢复失败");
+    if (!recovered) {
+      historyReady = false;
+      historyWarning = true;
+      yilai_diagnostic_event(log.context, "history_warning", recoveryDetail ? recoveryDetail.get() : "历史恢复未完成");
+    }
   }
   std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(nullptr, yilai_sources_finish);
-  if ((action == Action::Configure || action == Action::Official) && (closed || !runtimeOverride.empty())) {
+  if ((action == Action::Configure) && (closed || !runtimeOverride.empty())) {
     log.step("inspect_sources", "识别当前生效来源");
     char *sourceError = nullptr;
     sources.reset(yilai_sources_prepare(utf8(root.wstring()).c_str(), utf8(runtimeOverride.wstring()).c_str(), &sourceError));
@@ -228,7 +233,6 @@ static std::wstring perform(Action action, const fs::path &root,
             : key.substr(start, key.find_last_not_of(L" \t\r\n") - start + 1);
   ensure(key.find(L'\0') == std::wstring::npos, "API key contains NUL bytes");
   const int operation = action == Action::Images     ? YILAI_ENHANCE
-                        : action == Action::Official ? YILAI_OFFICIAL
                                                      : YILAI_CONFIGURE;
   char *error = nullptr;
   Buffer result(
@@ -276,18 +280,10 @@ static std::wstring perform(Action action, const fs::path &root,
     if (sources) {
       log.step("verify_sources", "核验新连接实际生效");
       char *sourceError = nullptr;
-      auto ok = yilai_sources_verify(sources.get(), action == Action::Official, utf8(key).c_str(), &sourceError);
+      auto ok = yilai_sources_verify(sources.get(), utf8(key).c_str(), &sourceError);
       Buffer sourceDetail(sourceError, yilai_config_free);
       ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源核验失败");
     }
-    log.step("sync_history", "同步本地历史");
-    char *syncError = nullptr;
-    Buffer synced(
-        yilai_sync_history(utf8(root.wstring()).c_str(), 0, &syncError),
-        yilai_config_free);
-    Buffer syncDetail(syncError, yilai_config_free);
-    ensure(synced != nullptr,
-           syncDetail ? syncDetail.get() : "History synchronization failed");
   } catch (...) {
     const auto failedStage = log.stage, failedLabel = log.label;
     std::string originalError = "未知错误";
@@ -333,14 +329,25 @@ static std::wstring perform(Action action, const fs::path &root,
       throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
     throw;
   }
-  return action == Action::Official
-             ? L"已切回官方，本地历史已同步。重开 Codex 后登录即可。"
-             : L"已切换到易来 API，生图和本地历史已就绪。请重开 Codex。";
+  if (historyReady) {
+    log.step("sync_history", "同步本地历史");
+    char *syncError = nullptr;
+    Buffer synced(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &syncError), yilai_config_free);
+    Buffer syncDetail(syncError, yilai_config_free);
+    if (!synced) {
+      historyWarning = true;
+      yilai_diagnostic_event(log.context, "history_warning", syncDetail ? syncDetail.get() : "历史同步未完成");
+    }
+  }
+  return historyWarning
+    ? L"API 已配置，生图已启用；历史同步未完成，请查看日志。请重开 Codex。"
+    : L"API 已配置，生图和本地历史已就绪。请重开 Codex。";
 }
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed, const fs::path &runtimeOverride) {
+                 bool closed, const fs::path &runtimeOverride, bool *historyWarning) {
+  bool warning = false;
+  if (historyWarning) *historyWarning = false;
   const char *name = action == Action::Configure  ? "switch_api"
-                     : action == Action::Official ? "switch_official"
                      : action == Action::Cleanup  ? "reset_config"
                      : action == Action::Undo     ? "undo_history"
                      : action == Action::Sync     ? "sync_history"
@@ -348,8 +355,9 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   try {
-    auto result = perform(action, root, input, closed, log, runtimeOverride);
-    yilai_diagnostic_end(log.context, 1, "操作完成");
+    auto result = perform(action, root, input, closed, log, runtimeOverride, warning);
+    if (historyWarning) *historyWarning = warning;
+    yilai_diagnostic_end(log.context, 1, warning ? "API configured; history incomplete" : "操作完成");
     return result;
   } catch (const std::exception &error) {
     Buffer clean(yilai_diagnostic_sanitize(log.context, error.what()),
@@ -447,15 +455,10 @@ bool selfTest(std::wstring &error) {
                read(root / L"auth.json") == auth,
            "Auth deletion failure did not roll back configuration");
     atomic(root / L"sessions/bad.jsonl", "invalid history\n");
-    failed = false;
-    try {
-      run(Action::Configure, root, L"sk-test", false);
-    } catch (...) {
-      failed = true;
-    }
-    ensure(failed && read(root / L"config.toml") == config &&
-               read(root / L"auth.json") == auth,
-           "History failure did not restore auth/config");
+    bool warning = false;
+    auto partial = run(Action::Configure, root, L"sk-test", false, {}, &warning);
+    ensure(warning && mode(root) == L"易来 API" && !fs::exists(root / L"auth.json") && partial.find(L"历史同步未完成") != std::wstring::npos,
+           "History failure must preserve successful API configuration and report warning");
     fs::remove(root / L"sessions/bad.jsonl");
     atomic(root / L"sessions/example.jsonl",
            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"example\",\"model_"
@@ -468,9 +471,6 @@ bool selfTest(std::wstring &error) {
                std::string::npos,
            "Switch did not synchronize history");
     atomic(root / L"auth.json", auth);
-    run(Action::Official, root, L"", false);
-    ensure(mode(root) == L"OpenAI 官方" && !fs::exists(root / L"auth.json"),
-           "Official switch failed");
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);
     atomic(root / L"auth.json", auth);

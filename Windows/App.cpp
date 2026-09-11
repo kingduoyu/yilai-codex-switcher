@@ -12,7 +12,7 @@
 
 namespace {
 constexpr UINT Done = WM_APP + 1;
-constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004,
+constexpr int Api = 1001, Reset = 1003, Eye = 1004,
               Logs = 1005;
 constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
                    Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
@@ -21,9 +21,10 @@ HWND keyBox, windowHandle;
 HFONT bodyFont, titleFont, smallFont, buttonFont;
 HBRUSH background, whiteBrush;
 bool busy = false, showKey = false, failed = false;
-std::wstring modeText, statusText = L"准备就绪。填写 Key，选择连接方式即可。";
+std::wstring modeText, statusText = L"准备就绪。填写 Key，即可配置 API 和生图。";
 struct Result {
   bool ok;
+  bool warning = false;
   std::wstring message;
   int operation;
 };
@@ -80,7 +81,7 @@ void paint(HWND window, HDC dc) {
   text(dc, L"Y", {28, 28, 74, 74}, titleFont, RGB(255, 255, 255),
        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   text(dc, L"易来 Codex", {88, 22, 440, 58}, titleFont, Ink);
-  text(dc, L"选择连接，继续创作。", {88, 59, 440, 82}, smallFont, Muted);
+  text(dc, L"配置 API，继续创作。", {88, 59, 440, 82}, smallFont, Muted);
   rounded(dc, {523, 39, 712, 70}, RGB(234, 240, 250), RGB(234, 240, 250), 30);
   text(dc, modeText, {531, 39, 704, 70}, smallFont, RGB(72, 92, 130),
        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -89,7 +90,7 @@ void paint(HWND window, HDC dc) {
   text(dc, L"仅切换到 API 时需要", {424, 138, 688, 166}, smallFont, Muted,
        DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
   rounded(dc, {52, 180, 688, 228}, RGB(255, 255, 255), Border, 10);
-  text(dc, L"生图与本地会话历史同步会自动完成", {52, 308, 688, 338}, smallFont,
+  text(dc, L"生图自动启用 · 切回官方请使用 CCS", {52, 308, 688, 338}, smallFont,
        Muted, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
   text(dc,
        failed ? L"暂未完成"
@@ -148,13 +149,12 @@ void begin(HWND window, int id) {
     return;
   }
   auto action = id == Api        ? app::Action::Configure
-                : id == Official ? app::Action::Official
                                  : app::Action::Cleanup;
   busy = true;
   failed = false;
   statusText =
       id == Reset ? L"正在停用旧配置…" : L"正在配置连接并同步本地历史，请稍候…";
-  for (int child : {Api, Official, Reset, Eye, Logs})
+  for (int child : {Api, Reset, Eye, Logs})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
   InvalidateRect(window, nullptr, FALSE);
@@ -162,7 +162,7 @@ void begin(HWND window, int id) {
     auto result = std::make_unique<Result>();
     result->operation = id;
     try {
-      result->message = app::run(action, app::home(), key);
+      result->message = app::run(action, app::home(), key, true, {}, &result->warning);
       result->ok = true;
     } catch (const std::exception &error) {
       result->ok = false;
@@ -187,8 +187,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     SendMessageW(keyBox, EM_SETPASSWORDCHAR, L'●', 0);
     SendMessageW(keyBox, EM_SETCUEBANNER, FALSE, LPARAM(L"粘贴你的 API Key"));
     button(window, Eye, L"显示", 628, 190, 48, 28);
-    button(window, Api, L"切换到易来 API", 52, 248, 309, 50);
-    button(window, Official, L"切换回官方设置", 377, 248, 311, 50);
+    button(window, Api, L"配置易来 API · 启用生图", 52, 248, 636, 50);
     button(window, Reset, L"重置配置", 624, 476, 88, 26);
     button(window, Logs, L"查看日志", 624, 382, 88, 28);
     ShowWindow(GetDlgItem(window, Logs), SW_HIDE);
@@ -234,7 +233,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
           statusText += L" 无法定位日志目录。";
           InvalidateRect(window, nullptr, FALSE);
         }
-      } else if (id == Api || id == Official || id == Reset)
+      } else if (id == Api || id == Reset)
         begin(window, id);
     }
     return 0;
@@ -243,8 +242,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     busy = false;
     failed = !result->ok;
     statusText = result->message;
-    ShowWindow(GetDlgItem(window, Logs), failed ? SW_SHOW : SW_HIDE);
-    for (int id : {Api, Official, Reset, Eye, Logs})
+    ShowWindow(GetDlgItem(window, Logs), (failed || result->warning) ? SW_SHOW : SW_HIDE);
+    for (int id : {Api, Reset, Eye, Logs})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(keyBox, TRUE);
     if (result->ok && result->operation == Api)
@@ -371,7 +370,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 520};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.4", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.5", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);

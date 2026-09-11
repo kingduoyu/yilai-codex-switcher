@@ -6,7 +6,8 @@ final class Controller: ObservableObject {
     @Published var reveal = false
     @Published var busy = false
     @Published var failed = false
-    @Published var message = "准备就绪。填写 API Key，或选择切回官方设置。"
+    @Published var warning = false
+    @Published var message = "准备就绪。填写 API Key，一键启用易来 API 和生图。"
     @Published var mode = ""
     let service = PlatformService()
 
@@ -22,14 +23,17 @@ final class Controller: ObservableObject {
         guard !busy else { return }
         busy = true
         failed = false
+        warning = false
         message = operation == .cleanup ? "正在重置配置…" : "正在切换并同步本地历史，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<String, Error> = Result { try service.run(operation, key: token) }
+            let historyWarning = service.historyWarning
             DispatchQueue.main.async { [self] in
                 busy = false
                 switch outcome {
                 case .success(let result):
+                    warning = historyWarning
                     message = result
                     if operation == .configure { key = "" }
                 case .failure(let error):
@@ -43,7 +47,6 @@ final class Controller: ObservableObject {
 }
 
 private struct SwitchButtonStyle: ButtonStyle {
-    let primary: Bool
     @Environment(\.isEnabled) private var enabled
     private let blue = Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)
 
@@ -52,10 +55,9 @@ private struct SwitchButtonStyle: ButtonStyle {
             .font(.system(size: 16, weight: .semibold))
             .frame(maxWidth: .infinity)
             .frame(height: 48)
-            .foregroundStyle(primary ? Color.white : Color(red: 0.17, green: 0.21, blue: 0.29))
-            .background(primary ? blue : Color.white)
+            .foregroundStyle(Color.white)
+            .background(blue)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(primary ? Color.clear : Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
             .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.55)
     }
 }
@@ -68,7 +70,7 @@ struct Content: View {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("易来 Codex").font(.system(size: 28, weight: .semibold))
-                    Text("选择连接，继续创作。")
+                    Text("一键连接，继续创作。")
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                 }
@@ -114,14 +116,10 @@ struct Content: View {
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
                 }
 
-                HStack(spacing: 14) {
-                    Button("切换到易来 API") { model.execute(.configure) }
-                        .buttonStyle(SwitchButtonStyle(primary: true))
-                    Button("切换回官方设置") { model.execute(.official) }
-                        .buttonStyle(SwitchButtonStyle(primary: false))
-                }
+                Button("配置易来 API · 启用生图") { model.execute(.configure) }
+                    .buttonStyle(SwitchButtonStyle())
 
-                Label("API 自动启用生图 · 两种切换均同步本地历史", systemImage: "sparkles")
+                Label("自动启用生图并同步本地历史 · 切回官方请使用 CCS", systemImage: "sparkles")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -134,14 +132,14 @@ struct Content: View {
                 if model.busy {
                     ProgressView().controlSize(.small).padding(.top, 1)
                 } else {
-                    Image(systemName: model.failed ? "exclamationmark.circle" : "checkmark.circle")
-                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                    Image(systemName: model.failed ? "exclamationmark.circle" : (model.warning ? "exclamationmark.triangle" : "checkmark.circle"))
+                        .foregroundStyle(model.failed ? Color.red : (model.warning ? Color.orange : Color.secondary))
                         .padding(.top, 1)
                 }
                 ScrollView {
                     Text(model.message)
                         .font(.system(size: 13))
-                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                        .foregroundStyle(model.failed ? Color.red : (model.warning ? Color.orange : Color.secondary))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -154,7 +152,7 @@ struct Content: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if model.failed {
+                if model.failed || model.warning {
                     Button("查看日志") { model.showLogs() }
                         .buttonStyle(.plain)
                         .font(.system(size: 12))
@@ -180,7 +178,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.4"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "易来 Codex 配置器 v3.3.5"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in

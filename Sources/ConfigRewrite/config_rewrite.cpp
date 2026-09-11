@@ -247,21 +247,6 @@ toml::table rewrite(const char *text, const char *key, int action) {
         scope->insert_or_assign("cli_auth_credentials_store", "file");
         remove_owned_catalog(*scope);
       }
-  } else if (action == YILAI_OFFICIAL) {
-    // Match CCS's native official provider while retaining the shared history
-    // bucket. Never copy the previous provider's endpoint, token or headers.
-    toml::table official{{"name", "OpenAI"},
-                         {"wire_api", "responses"},
-                         {"requires_openai_auth", true},
-                         {"supports_websockets", true}};
-    auto *providers = root["model_providers"].as_table();
-    auto *current = providers ? (*providers)["custom"].as_table() : nullptr;
-    if (provider_id(root) != "custom" || !current || *current != official)
-      install_custom(root, std::move(official));
-    clear_active_connection_constraints(root);
-    for (auto *scope : {&root, profile})
-      if (scope)
-        remove_owned_catalog(*scope);
   } else if (action == YILAI_UNIFY_HISTORY) {
     auto id = provider_id(root);
     auto *current = selected_provider(root);
@@ -362,16 +347,6 @@ enabled = true
                 "second-key" &&
             format(new_key).find("first-key") == std::string::npos,
         "An unreferenced old API connection or key was archived.");
-  auto roundtrip = new_key;
-  for (int i = 0; i < 8; ++i) {
-    roundtrip = rewrite(format(roundtrip).c_str(), "", YILAI_OFFICIAL);
-    check(roundtrip["model_providers"].as_table()->size() == 1 &&
-              format(roundtrip).find("second-key") == std::string::npos,
-          "Official switching archived an unreferenced API key.");
-    roundtrip = rewrite(format(roundtrip).c_str(), "second-key", YILAI_CONFIGURE);
-    check(roundtrip == new_key,
-          "API/official round trips accumulated unused providers.");
-  }
   auto identical_shared = standalone;
   table_at(table_at(identical_shared, "profiles"), "personal")
       .insert_or_assign("model_provider", "custom");
@@ -400,14 +375,6 @@ enabled = true
   check(rewrite(format(changed_shared).c_str(), "second-key", YILAI_CONFIGURE) ==
             changed_shared,
         "Repeated profile switching kept archiving its unreferenced route.");
-  auto shared_roundtrip = changed_shared;
-  for (int i = 0; i < 4; ++i) {
-    shared_roundtrip = rewrite(format(shared_roundtrip).c_str(), "", YILAI_OFFICIAL);
-    shared_roundtrip =
-        rewrite(format(shared_roundtrip).c_str(), "second-key", YILAI_CONFIGURE);
-    check(shared_roundtrip == changed_shared,
-          "Shared-profile round trips lost a saved route or added providers.");
-  }
   auto retained_legacy = standalone;
   table_at(retained_legacy, "model_providers")
       .insert_or_assign("yilai-sync-previous-custom",
@@ -499,7 +466,7 @@ model='unchanged'
         "overwrote a saved connection.");
   auto root_active = toml::parse(multiple_profiles);
   root_active.erase("profile");
-  for (auto action : {YILAI_CONFIGURE, YILAI_UNIFY_HISTORY, YILAI_OFFICIAL}) {
+  for (auto action : {YILAI_CONFIGURE, YILAI_UNIFY_HISTORY}) {
     // With no selected profile, profiles that inherit the root must keep their
     // old backend.
     root_active.insert_or_assign("model_provider", "yilai");
@@ -533,40 +500,6 @@ model='unchanged'
                 true &&
             !official["model_providers"]["custom"]["experimental_bearer_token"],
         "Official alias carries third-party credentials.");
-  auto restored_official =
-      rewrite(format(connected).c_str(), "", YILAI_OFFICIAL);
-  const toml::table official_provider{{"name", "OpenAI"},
-                                      {"wire_api", "responses"},
-                                      {"requires_openai_auth", true},
-                                      {"supports_websockets", true}};
-  check(*selected_provider(restored_official) == official_provider &&
-            restored_official["profiles"]["work"]["model_provider"] ==
-                "custom" &&
-            restored_official["model"] == connected["model"] &&
-            restored_official["model_catalog_json"] ==
-                connected["model_catalog_json"] &&
-            restored_official["cli_auth_credentials_store"] ==
-                connected["cli_auth_credentials_store"] &&
-            restored_official["mcp_servers"] == connected["mcp_servers"] &&
-            restored_official["plugins"] == connected["plugins"] &&
-            !restored_official["forced_login_method"] &&
-            !restored_official["forced_chatgpt_workspace_id"],
-        "Official switching retained third-party routing or changed user "
-        "settings.");
-  check(rewrite(format(restored_official).c_str(), "", YILAI_OFFICIAL) ==
-            restored_official,
-        "Repeated official switching must not create more saved providers.");
-  auto official_profiles = rewrite(multiple_profiles, "", YILAI_OFFICIAL);
-  check(
-      official_profiles["profiles"]["work"]["model_provider"] == "custom" &&
-          *selected_provider(official_profiles) == official_provider &&
-          official_profiles["profiles"]["personal"]["model_provider"] ==
-              "yilai-sync-previous-custom" &&
-          official_profiles["model_provider"] == "yilai-sync-previous-custom" &&
-          !official_profiles["profiles"]["inherited"]["model_provider"] &&
-          official_profiles["model_providers"]["yilai-sync-previous-custom"] ==
-              toml::parse(multiple_profiles)["model_providers"]["custom"],
-      "Official switching redirected inactive profiles.");
   auto restricted = connected;
   restricted.insert_or_assign("openai_base_url", "https://third-party.invalid");
   restricted.insert_or_assign("chatgpt_base_url",
@@ -582,17 +515,6 @@ model='unchanged'
   restricted_profile->insert_or_assign("chatgpt_base_url",
                                        "https://third-party.invalid");
   restricted_profile->insert_or_assign("model_catalog_json", "ccs-keep.json");
-  auto unrestricted = rewrite(format(restricted).c_str(), "", YILAI_OFFICIAL);
-  for (auto *scope : {&unrestricted, active_profile(unrestricted)})
-    check(!scope->contains("forced_login_method") &&
-              !scope->contains("forced_chatgpt_workspace_id") &&
-              !scope->contains("openai_base_url") &&
-              !scope->contains("chatgpt_base_url"),
-          "Official login inherited stale third-party constraints.");
-  check(!unrestricted["model_catalog_json"] &&
-            unrestricted["profiles"]["work"]["model_catalog_json"] ==
-                "ccs-keep.json",
-        "Official switching must remove only the old owned model catalog.");
   auto api_unrestricted =
       rewrite(format(restricted).c_str(), "new-key", YILAI_CONFIGURE);
   for (auto *scope : {&api_unrestricted, active_profile(api_unrestricted)})
@@ -606,10 +528,6 @@ model='unchanged'
             api_unrestricted["profiles"]["work"]["model_catalog_json"] ==
                 "ccs-keep.json",
         "API switching unexpectedly replaced the model catalog.");
-  auto fresh_official = rewrite("", "", YILAI_OFFICIAL);
-  check(fresh_official["model_provider"] == "custom" &&
-            *selected_provider(fresh_official) == official_provider,
-        "Official switching requires no previous configuration or API key.");
   check(!is_yilai(selected_provider(before)) &&
             is_yilai(selected_provider(connected)),
         "Provider identity must inspect endpoint.");
