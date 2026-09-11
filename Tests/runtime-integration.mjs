@@ -75,6 +75,8 @@ try{
  await server.close();server=null;
  const beforeUndo=await readFile(rollout,'utf8');operation('undo');const undone=await readFile(rollout,'utf8');assert.equal(JSON.parse(undone.split('\n')[idx]).payload.model_provider,'yilai');assert.deepEqual(undone.split('\n').filter((_,i)=>i!==idx),beforeUndo.split('\n').filter((_,i)=>i!==idx));await assert.rejects(access(path.join(home,'auth.json')));
  assert(requests.filter(x=>x.url.endsWith('/responses')).length>=2);for(const req of requests.filter(x=>x.url.endsWith('/responses'))){assert.equal(req.headers['x-openai-actor-authorization'],'local-image-extension');if(req===requests.filter(x=>x.url.endsWith('/responses'))[0]) assert.equal(req.headers['x-keep'],'unchanged'); else assert.equal(req.headers['x-keep'],undefined, 'Switching providers must remove the previous provider header');assert.equal(req.body.model,'gpt-6-astra');assert(req.body.tools.some(t=>t.type==='namespace'&&t.name==='image_gen'&&t.tools.some(f=>f.name==='imagegen')), 'Native image tool missing');}
+ // Undo above deliberately restored the old history provider; API setup must reunify it.
+ operation('configure');await assert.rejects(access(path.join(home,'auth.json')));
  for(const account of ['first','second']){
   const credential=JSON.stringify({OPENAI_API_KEY:'sk-synthetic-'+account});await writeFile(path.join(home,'auth.json'),credential);
   server=await new Server().init();const visible=await server.request('thread/list',{modelProviders:['custom'],limit:100});assert(visible.data.some(t=>t.id===id));const detail=await server.request('thread/read',{threadId:id,includeTurns:true});assert(JSON.stringify(detail).includes('Synthetic message after history sync'));await server.close();server=null;
