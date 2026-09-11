@@ -15,3 +15,5 @@ Limits: mock API tests, no paid image or official-login end-to-end verification.
 | YilaiCodexSwitcher.exe | 3800064 | a05deaeb2029f8fb854e75e6b04adb853619c3d9c47ccae45e688941a1488d3f |
 | YilaiCodexSwitcher-macOS-universal.dmg | 4760690 | 53da1a110aa2b158bf19dd35d97fa5e6f33d8e20e81013894b017a546be606eb |
 | YilaiCodexSwitcher-macOS-universal.zip | 3969367 | b387bf29e740201f3f28550cb629c0bd473bbc14fdc80046e70e1277d762a451 |
+
+Publication confirmed: 2026-09-11T15:44:04Z (UTC). GitHub latest v3.3.6, not draft/prerelease. Four remote asset sizes/digests verified before publication; local publish copies hash-verified. Release tag source a52f30c; application source unchanged from a3a9017.
