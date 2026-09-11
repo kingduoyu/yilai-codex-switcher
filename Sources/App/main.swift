@@ -58,6 +58,7 @@ struct Content: View {
         }
         .padding(32).frame(width: 864, height: 624).background(Color(red: 0.973, green: 0.98, blue: 0.992))
         .disabled(model.busy)
+        .preferredColorScheme(.light)
     }
 }
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -74,6 +75,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 do { guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }; try png.write(to: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) } catch { exit(1) }
             }
         }
+    }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        controller.busy ? .terminateCancel : .terminateNow
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !controller.busy }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
