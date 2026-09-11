@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.3
+# 易来 Codex 配置器 v3.3.4
 
 Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 Codex 即可。
 
@@ -19,6 +19,7 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 ## 切换行为
 
 - 易来使用 CCS 兼容的 custom provider，在供应商节点写入 API Key，设置 requires_openai_auth=false，并启用生图。
+- Windows 优先使用桌面端版本目录内的运行时，旧版 bin/codex.exe 仅作为后备；macOS 使用其应用包运行时。读取失败显示所用路径、RPC 码及安全分类。
 - 两个主切换在写配置前调用已安装 Codex 的 config/read，读取实际加载层及字段来源；默认检查当前用户目录，以及桌面记录的 active-workspace-roots 中可访问的本机活动项目。
 - 对用户配置之上、已加载的项目/profile文件，先备份，再移除连接选择、连接覆盖和生图开关；保留模型、目录、MCP、权限及未使用的其他配置。存在但未受信任的项目层不修改，不扫描未加载的 profile 文件。
 - 写入新连接后再次读取实际结果，核验 provider、地址、认证及 API 生图配置；核验失败不进入历史同步，恢复本次配置/auth/来源改动。源码层备份位于 CODEX_HOME/yilai-source-backups，已知中断记录下次切换自动处理。
@@ -49,6 +50,8 @@ macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；正式通用版由 Build m
 
 真实运行时验证：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。需要 Node.js、Python 和 LLVM-MinGW。测试使用独立数据目录与本机模拟 Responses 服务，验证 auth 删除后无需官方登录、API Key 实际请求认证、内置生图工具、自动同步与继续对话；不调用付费模型。
 
-版本事实见 releases/v3.3.3/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.4/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
 
 新增来源集成验证：python Tests/source-integration.py dist/test-driver.exe <codex.exe绝对路径>。使用合成受信/未受信项目、嵌套覆盖与故障历史，不调用付费模型。
+
+自动发现完整来源回归：python Tests/source-integration.py dist/test-driver.exe --auto-runtime。独立查找/诊断回归为 Tests/runtime-discovery.py，使用 Tests/runtime-probe-driver.cpp 构建的辅助程序与新旧实际运行时，不修改用户配置。

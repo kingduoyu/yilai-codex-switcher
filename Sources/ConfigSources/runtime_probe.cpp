@@ -229,7 +229,6 @@ std::filesystem::path locate_runtime() {
   auto local=environment(L"LOCALAPPDATA");
   if(!local.empty()) {
     auto bin=fs::path(local)/L"OpenAI"/L"Codex"/L"bin";
-    candidates.push_back(bin/L"codex.exe");
     std::vector<std::pair<fs::file_time_type,fs::path>> versions;
     std::error_code error;
     for(fs::directory_iterator i(bin,error),end;!error && i!=end;i.increment(error)) {
@@ -241,7 +240,10 @@ std::filesystem::path locate_runtime() {
       }
     }
     std::sort(versions.begin(),versions.end(),[](const auto &a,const auto &b){return a.first>b.first;});
+    // Desktop updates keep their runtime in a versioned directory. The loose
+    // executable can be an older installation that rejects current settings.
     for(const auto &version:versions)candidates.push_back(version.second);
+    candidates.push_back(bin/L"codex.exe");
   }
   auto path=environment(L"PATH");
   size_t start=0;
@@ -280,7 +282,7 @@ std::string probe_config(const std::filesystem::path &runtime,
   if(!regular(runtime))fail("runtime unavailable");
   const auto deadline=Clock::now()+std::chrono::seconds(20);
   Child child;child.launch(runtime,home);
-  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.3"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
+  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.4"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
   bool initialized=false;
   std::string pending;
   size_t received=0;
@@ -300,7 +302,24 @@ std::string probe_config(const std::filesystem::path &runtime,
       if(!message.contains("id") || !message["id"].is_number_integer())continue;
       auto id=message["id"].get<int>();
       if((!initialized && id!=1)||(initialized && id!=2))continue;
-      if(message.contains("error"))fail(initialized?"config/read rejected":"initialize rejected");
+      if(message.contains("error")) {
+        const auto &error=message["error"];
+        const auto code=error.is_object() && error.contains("code") && error["code"].is_number_integer()
+          ? std::to_string(error["code"].get<int>()) : std::string("unknown");
+        const auto detail=error.is_object() && error.contains("message") && error["message"].is_string()
+          ? error["message"].get<std::string>() : std::string();
+        // Never forward raw server errors: they can quote config values/keys.
+        std::string reason=initialized ? "Codex 拒绝读取配置" : "Codex 初始化被拒绝";
+        if(code=="-32601")reason="当前 Codex 运行时不支持所需配置读取接口";
+        else if(detail.find("unknown variant")!=std::string::npos && detail.find("model_reasoning_effort")!=std::string::npos)
+          reason="当前 Codex 运行时不支持配置中的推理档位，请使用与桌面应用匹配的 Codex 版本";
+        else if(detail.find("Model provider")!=std::string::npos && detail.find("not found")!=std::string::npos)
+          reason="配置引用了未定义的模型供应商";
+        else if(detail.find("invalid configuration")!=std::string::npos)
+          reason="配置字段不被当前 Codex 运行时接受";
+        else if(code=="-32602")reason="配置读取参数与当前 Codex 运行时不兼容";
+        throw std::runtime_error(reason+"（RPC "+code+"）。运行时："+utf8(runtime)+"；配置上下文："+utf8(cwd));
+      }
       if(!message.contains("result") || !message["result"].is_object())fail("missing protocol result");
       if(initialized)return message["result"].dump();
       initialized=true;

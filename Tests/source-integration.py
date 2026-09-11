@@ -9,7 +9,8 @@ import tempfile
 import tomllib
 
 repo = Path(__file__).resolve().parent.parent
-driver, runtime = map(lambda value: str(Path(value).resolve()), sys.argv[1:3])
+driver = str(Path(sys.argv[1]).resolve())
+runtime = '--auto-runtime' if sys.argv[2] == '--auto-runtime' else str(Path(sys.argv[2]).resolve())
 root = Path(tempfile.mkdtemp(prefix="source-test-", dir=repo / "dist")).resolve()
 facts = []
 
@@ -21,7 +22,7 @@ def setup(name, trusted=True, nested=False):
     (project / '.codex').mkdir(parents=True)
     (project / '.git').mkdir()
     trust_key = str(project).lower() if os.name == 'nt' else str(project)
-    user = ('model="gpt-6-astra"\nmodel_provider="custom"\n'
+    user = ('model="gpt-6-astra"\nmodel_provider="custom"\nmodel_reasoning_effort="max"\n'
             '[model_providers.custom]\nname="old-user"\nbase_url="https://old.invalid"\n'
             'wire_api="responses"\nrequires_openai_auth=false\nexperimental_bearer_token="synthetic-user-secret"\n'
             '[model_providers.legacy]\nname="old-project"\nbase_url="https://legacy.invalid"\n'
