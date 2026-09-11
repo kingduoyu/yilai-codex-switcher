@@ -267,7 +267,7 @@ func runSelfTest() throws {
   try originalAuth.data(using: .utf8)!.write(to: root.appendingPathComponent("auth.json"))
 
   let service = CodexConfigurationService(codexDirectory: root)
-  guard try service.mode() == .other else {
+  guard try service.mode() == .yilai else {
     throw SwitcherError.message("自测失败：第三方模式识别")
   }
   try service.switchToYilai(key: "sk-test-key")
