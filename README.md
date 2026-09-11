@@ -12,6 +12,10 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 
 界面底部的 **重置配置** 仅供切换无效时使用。点击即把 config.toml 改名为 config.toml.disabled-唯一后缀，不弹确认、不删除原文件、不自动恢复它，也不碰登录和历史。重置后重新填写 Key 并切换。
 
+## 错误反馈
+
+每次操作会自动写入 CODEX_HOME/yilai-switcher-logs。失败时界面显示具体阶段和原因，并出现“查看日志”入口；可将对应日志发给支持人员。日志包含版本、平台、操作步骤、错误与回滚结果，不记录配置全文、登录内容或对话正文，Key/令牌会脱敏。日志写入失败不会改变切换操作的成败。
+
 ## 切换行为
 
 - 易来使用 CCS 兼容的 custom provider，在供应商节点写入 API Key，设置 requires_openai_auth=false，并启用生图。

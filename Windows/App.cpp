@@ -12,7 +12,8 @@
 
 namespace {
 constexpr UINT Done = WM_APP + 1;
-constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004;
+constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004,
+              Logs = 1005;
 constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
                    Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
                    Border = RGB(225, 231, 240);
@@ -103,13 +104,16 @@ void paint(HWND window, HDC dc) {
 void drawButton(const DRAWITEMSTRUCT &item) {
   bool enabled = !(item.itemState & ODS_DISABLED);
   bool down = item.itemState & ODS_SELECTED;
-  const bool primary = item.CtlID == Api,
-             quiet = item.CtlID == Reset || item.CtlID == Eye;
-  COLORREF fill = quiet ? (item.CtlID == Reset ? Canvas : RGB(255, 255, 255))
-                  : primary ? (enabled ? down ? RGB(29, 78, 216) : Blue
-                                       : RGB(161, 184, 234))
-                  : down    ? RGB(239, 243, 249)
-                            : RGB(255, 255, 255);
+  const bool primary = item.CtlID == Api, quiet = item.CtlID == Reset ||
+                                                  item.CtlID == Eye ||
+                                                  item.CtlID == Logs;
+  COLORREF fill =
+      quiet ? ((item.CtlID == Reset || item.CtlID == Logs) ? Canvas
+                                                           : RGB(255, 255, 255))
+      : primary
+          ? (enabled ? down ? RGB(29, 78, 216) : Blue : RGB(161, 184, 234))
+      : down ? RGB(239, 243, 249)
+             : RGB(255, 255, 255);
   rounded(item.hDC, item.rcItem, fill,
           quiet     ? fill
           : primary ? fill
@@ -150,7 +154,7 @@ void begin(HWND window, int id) {
   failed = false;
   statusText =
       id == Reset ? L"正在停用旧配置…" : L"正在配置连接并同步本地历史，请稍候…";
-  for (int child : {Api, Official, Reset, Eye})
+  for (int child : {Api, Official, Reset, Eye, Logs})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
   InvalidateRect(window, nullptr, FALSE);
@@ -186,6 +190,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     button(window, Api, L"切换到易来 API", 52, 248, 309, 50);
     button(window, Official, L"切换回官方设置", 377, 248, 311, 50);
     button(window, Reset, L"重置配置", 624, 476, 88, 26);
+    button(window, Logs, L"查看日志", 624, 382, 88, 28);
+    ShowWindow(GetDlgItem(window, Logs), SW_HIDE);
     refresh();
     return 0;
   }
@@ -216,6 +222,18 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
         SendMessageW(keyBox, EM_SETPASSWORDCHAR, showKey ? 0 : L'●', 0);
         SetWindowTextW(GetDlgItem(window, Eye), showKey ? L"隐藏" : L"显示");
         InvalidateRect(keyBox, nullptr, TRUE);
+      } else if (id == Logs) {
+        try {
+          auto folder = app::home() / L"yilai-switcher-logs";
+          if (INT_PTR(ShellExecuteW(window, L"open", folder.c_str(), nullptr,
+                                    nullptr, SW_SHOWNORMAL)) <= 32) {
+            statusText += L" 日志目录无法打开，请检查目录权限。";
+            InvalidateRect(window, nullptr, FALSE);
+          }
+        } catch (...) {
+          statusText += L" 无法定位日志目录。";
+          InvalidateRect(window, nullptr, FALSE);
+        }
       } else if (id == Api || id == Official || id == Reset)
         begin(window, id);
     }
@@ -225,6 +243,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     busy = false;
     failed = !result->ok;
     statusText = result->message;
+    ShowWindow(GetDlgItem(window, Logs), failed ? SW_SHOW : SW_HIDE);
     for (int id : {Api, Official, Reset, Eye})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(keyBox, TRUE);
@@ -360,6 +379,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   ShowWindow(window, screenshot ? SW_SHOWNOACTIVATE : show);
   UpdateWindow(window);
   if (screenshot) {
+    if (argc > 3 && std::wstring(argv[3]) == L"--error-state") {
+      failed = true;
+      statusText =
+          L"删除旧登录文件失败：文件正在被占用。请完全退出 Codex 后重试。";
+      ShowWindow(GetDlgItem(window, Logs), SW_SHOW);
+    }
     try {
       capture(window, argv[2]);
       DestroyWindow(window);

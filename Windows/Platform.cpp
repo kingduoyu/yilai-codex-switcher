@@ -4,6 +4,7 @@
 #include "../Sources/HistorySync/vendor/json.hpp"
 #include "ConfigRewrite.h"
 #include "HistorySync.h"
+#include "Diagnostics.h"
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -99,6 +100,16 @@ void requireAppsClosed() {
       "请完全退出 Codex 和 CC-Switch 后再操作；关闭窗口后也请检查后台进程。");
 }
 using Buffer = std::unique_ptr<char, decltype(&yilai_config_free)>;
+struct OperationLog {
+  YilaiDiagnostic *context;
+  std::string stage = "start";
+  std::string label = "开始操作";
+  void step(const char *code, const char *description) {
+    stage = code;
+    label = description;
+    yilai_diagnostic_event(context, code, description);
+  }
+};
 } // namespace
 fs::path home() {
   wchar_t *env = nullptr;
@@ -132,12 +143,15 @@ std::wstring mode(const fs::path &root) {
     return L"配置需要检查";
   }
 }
-std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed) {
+static std::wstring perform(Action action, const fs::path &root,
+                            const std::wstring &input, bool closed,
+                            OperationLog &log) {
+  log.step("checking_apps", "检查后台程序");
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
   if (action == Action::Cleanup) {
+    log.step("rename_config", "停用旧配置");
     regular(config);
     if (!fs::exists(config))
       return L"没有需要重置的配置。填写 API Key 后即可切换。";
@@ -151,6 +165,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     return L"旧配置已停用。填写 API Key 后可重新切换。";
   }
   if (action == Action::Sync || action == Action::Undo) {
+    log.step("sync_history", "处理本地历史");
     char *error = nullptr;
     Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(),
                                      action == Action::Undo, &error),
@@ -160,6 +175,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
            detail ? detail.get() : "History operation failed");
     return action == Action::Sync ? L"本地历史已同步。" : L"已撤销历史同步。";
   }
+  log.step("prepare_config", "准备连接配置");
   regular(config);
   const bool hadConfig = fs::exists(config);
   const auto before = hadConfig ? read(config) : "";
@@ -188,14 +204,17 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     atomic(config, after);
     return L"生图已启用。";
   }
+  log.step("read_auth", "检查登录文件");
   const auto authPath = root / L"auth.json";
   regular(authPath);
   const bool hadAuth = fs::exists(authPath);
   const auto authBefore = hadAuth ? read(authPath) : "";
   bool wroteConfig = false, removedAuth = false;
   try {
+    log.step("write_config", "写入连接配置");
     atomic(config, after);
     wroteConfig = true;
+    log.step("delete_auth", "删除旧登录文件");
     if (hadAuth) {
       ensure(fs::remove(authPath),
              "无法删除登录文件，请完全退出 Codex 后重试。");
@@ -203,6 +222,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     }
     ensure(!fs::exists(authPath),
            "登录文件被重新创建，请完全退出 Codex 和 CC-Switch。");
+    log.step("sync_history", "同步本地历史");
     char *syncError = nullptr;
     Buffer synced(
         yilai_sync_history(utf8(root.wstring()).c_str(), 0, &syncError),
@@ -211,7 +231,9 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     ensure(synced != nullptr,
            syncDetail ? syncDetail.get() : "History synchronization failed");
   } catch (...) {
+    const auto failedStage = log.stage, failedLabel = log.label;
     bool restored = true;
+    log.step("rollback_config", "还原连接配置");
     try {
       if (wroteConfig) {
         if (hadConfig)
@@ -219,15 +241,21 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
         else
           fs::remove(config);
       }
+      yilai_diagnostic_event(log.context, "rollback_config", "还原完成");
     } catch (...) {
       restored = false;
+      yilai_diagnostic_event(log.context, "rollback_config", "还原失败");
     }
+    log.step("rollback_auth", "还原登录文件");
     try {
       if (removedAuth)
         atomic(authPath, authBefore);
+      yilai_diagnostic_event(log.context, "rollback_auth", "还原完成");
     } catch (...) {
       restored = false;
+      yilai_diagnostic_event(log.context, "rollback_auth", "还原失败");
     }
+    log.step(failedStage.c_str(), failedLabel.c_str());
     ensure(restored, "切换未完成且回滚不完整，请保留历史备份并联系支持。");
     throw;
   }
@@ -235,9 +263,37 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
              ? L"已切回官方，本地历史已同步。重开 Codex 后登录即可。"
              : L"已切换到易来 API，生图和本地历史已就绪。请重开 Codex。";
 }
+std::wstring run(Action action, const fs::path &root, const std::wstring &input,
+                 bool closed) {
+  const char *name = action == Action::Configure  ? "switch_api"
+                     : action == Action::Official ? "switch_official"
+                     : action == Action::Cleanup  ? "reset_config"
+                     : action == Action::Undo     ? "undo_history"
+                     : action == Action::Sync     ? "sync_history"
+                                                  : "enhance_images";
+  OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
+                                          utf8(input).c_str())};
+  try {
+    auto result = perform(action, root, input, closed, log);
+    yilai_diagnostic_end(log.context, 1, "操作完成");
+    return result;
+  } catch (const std::exception &error) {
+    Buffer clean(yilai_diagnostic_sanitize(log.context, error.what()),
+                 yilai_config_free);
+    const std::string message =
+        log.label + "失败：" + (clean ? clean.get() : "错误详情不可用");
+    yilai_diagnostic_event(log.context, log.stage.c_str(), message.c_str());
+    yilai_diagnostic_end(log.context, 0, message.c_str());
+    throw std::runtime_error(message);
+  } catch (...) {
+    yilai_diagnostic_end(log.context, 0, "未知错误");
+    throw std::runtime_error("操作未完成，发生未知错误。");
+  }
+}
 bool selfTest(std::wstring &error) {
   try {
-    for (auto test : {yilai_config_self_test, yilai_history_self_test}) {
+    for (auto test : {yilai_config_self_test, yilai_history_self_test,
+                      yilai_diagnostic_self_test}) {
       char *detail = nullptr;
       int ok = test(&detail);
       Buffer message(detail, yilai_config_free);
@@ -336,6 +392,16 @@ bool selfTest(std::wstring &error) {
         ++preserved;
     ensure(preserved == 1, "Reset did not preserve configuration bytes");
     run(Action::Cleanup, root, L"", false);
+    std::string diagnostics;
+    for (const auto &entry :
+         fs::directory_iterator(root / L"yilai-switcher-logs"))
+      if (entry.is_regular_file())
+        diagnostics += read(entry.path());
+    ensure(diagnostics.find("sk-test") == std::string::npos,
+           "Diagnostics leaked API key");
+    ensure(diagnostics.find("rollback_config") != std::string::npos &&
+               diagnostics.find("delete_auth") != std::string::npos,
+           "Diagnostics omitted failed stage or rollback");
     return true;
   } catch (const std::exception &e) {
     error = wide(e.what());

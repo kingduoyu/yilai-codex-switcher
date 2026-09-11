@@ -75,10 +75,15 @@ try{
  await server.close();server=null;
  const beforeUndo=await readFile(rollout,'utf8');operation('undo');const undone=await readFile(rollout,'utf8');assert.equal(JSON.parse(undone.split('\n')[idx]).payload.model_provider,'yilai');assert.deepEqual(undone.split('\n').filter((_,i)=>i!==idx),beforeUndo.split('\n').filter((_,i)=>i!==idx));await assert.rejects(access(path.join(home,'auth.json')));
  assert(requests.filter(x=>x.url.endsWith('/responses')).length>=2);for(const req of requests.filter(x=>x.url.endsWith('/responses'))){assert.equal(req.headers['x-openai-actor-authorization'],'local-image-extension');if(req===requests.filter(x=>x.url.endsWith('/responses'))[0]) assert.equal(req.headers['x-keep'],'unchanged'); else assert.equal(req.headers['x-keep'],undefined, 'Switching providers must remove the previous provider header');assert.equal(req.body.model,'gpt-6-astra');assert(req.body.tools.some(t=>t.type==='namespace'&&t.name==='image_gen'&&t.tools.some(f=>f.name==='imagegen')), 'Native image tool missing');}
- // Simulate CCS selecting official mode, then another local login credential.
- await writeFile(path.join(home,'config.toml'),"model='gpt-6-astra'\nmodel_catalog_json="+JSON.stringify(catalogPath.replaceAll('\\','/'))+"\ncli_auth_credentials_store='file'\n[analytics]\nenabled=false\n");
+ // Exercise the real API-to-official switch without replacing its input config.
  operation('official');await assert.rejects(access(path.join(home,'auth.json')));
- const officialConfig=await readFile(path.join(home,'config.toml'),'utf8');assert(officialConfig.includes('requires_openai_auth = true'));assert(!officialConfig.includes('base_url'));assert(!officialConfig.includes('experimental_bearer_token'));
+ server=await new Server().init();
+ const officialEffective=(await server.request('config/read',{includeLayers:false})).config;
+ assert.equal(officialEffective.model_provider,'custom');assert.equal(officialEffective.model,'gpt-6-astra');
+ const officialProvider=officialEffective.model_providers.custom;
+ assert.equal(officialProvider.requires_openai_auth,true);assert(!officialProvider.base_url);assert(!officialProvider.experimental_bearer_token);assert(!officialProvider.http_headers?.['x-openai-actor-authorization']);
+ const officialLogin=await server.request('account/read',{refreshToken:false});assert.equal(officialLogin.requiresOpenaiAuth,true);assert.equal(officialLogin.account,null);
+ await server.close();server=null;
  for(const account of ['first','second']){
   const credential=JSON.stringify({OPENAI_API_KEY:'sk-synthetic-'+account});await writeFile(path.join(home,'auth.json'),credential);
   server=await new Server().init();const visible=await server.request('thread/list',{modelProviders:['custom'],limit:100});assert(visible.data.some(t=>t.id===id));const detail=await server.request('thread/read',{threadId:id,includeTurns:true});assert(JSON.stringify(detail).includes('Synthetic message after history sync'));await server.close();server=null;

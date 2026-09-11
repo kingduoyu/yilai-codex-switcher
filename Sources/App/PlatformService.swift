@@ -2,11 +2,56 @@ import Foundation
 import Darwin
 import ConfigRewrite
 import HistorySync
+import Diagnostics
 
 enum Operation: String, CaseIterable { case images, configure, official, sync, undo, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+private final class DiagnosticLog {
+    private var context: OpaquePointer?
+    private var lastMainStage = "准备操作"
+
+    init(root: URL, operation: Operation, key: String) {
+        context = root.path.withCString { home in
+            operation.rawValue.withCString { action in
+                key.withCString { yilai_diagnostic_begin(home, action, $0) }
+            }
+        }
+    }
+
+    func event(_ stage: String, _ message: String) {
+        switch stage {
+        case "checking_apps": lastMainStage = "检查后台程序"
+        case "prepare_config": lastMainStage = "准备连接配置"
+        case "write_config": lastMainStage = "写入配置"
+        case "delete_auth": lastMainStage = "删除旧登录文件"
+        case "sync_history": lastMainStage = "同步本地历史"
+        case "rename_config": lastMainStage = "停用旧配置"
+        default: break
+        }
+        stage.withCString { name in
+            message.withCString { yilai_diagnostic_event(context, name, $0) }
+        }
+    }
+
+    func failureMessage(_ message: String) -> String {
+        "\(lastMainStage)失败：\(sanitized(message))"
+    }
+
+    func sanitized(_ message: String) -> String {
+        let output = message.withCString { yilai_diagnostic_sanitize(context, $0) }
+        guard let output else { return "操作失败。请检查配置和应用状态后重试。" }
+        defer { yilai_config_free(output) }
+        return String(cString: output)
+    }
+
+    func finish(success: Bool, message: String) {
+        message.withCString { yilai_diagnostic_end(context, success ? 1 : 0, $0) }
+        context = nil
+    }
 }
 
 final class PlatformService {
@@ -22,6 +67,7 @@ final class PlatformService {
 
     private var config: URL { root.appendingPathComponent("config.toml") }
     private var auth: URL { root.appendingPathComponent("auth.json") }
+    var logsDirectory: URL { root.appendingPathComponent("yilai-switcher-logs", isDirectory: true) }
 
     func mode() -> String {
         guard files.fileExists(atPath: config.path) else { return "尚未配置" }
@@ -98,18 +144,42 @@ final class PlatformService {
     }
 
     func run(_ operation: Operation, key: String = "", requireClosed: Bool = true) throws -> String {
+        let log = DiagnosticLog(root: root, operation: operation, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
+        do {
+            let result = try runOperation(operation, key: key, requireClosed: requireClosed, log: log)
+            log.finish(success: true, message: "Operation completed")
+            return result
+        } catch {
+            let message = log.failureMessage(error.localizedDescription)
+            log.event("failure", message)
+            log.finish(success: false, message: message)
+            throw AppError(message: message)
+        }
+    }
+
+    private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, log: DiagnosticLog) throws -> String {
+        log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
-        if operation == .sync || operation == .undo { return try history(undo: operation == .undo) }
+        if operation == .sync || operation == .undo {
+            log.event("sync_history", operation == .undo ? "Restoring local history classification" : "Synchronizing local history")
+            return try history(undo: operation == .undo)
+        }
         if operation == .cleanup {
+            log.event("prepare_config", "Checking config before reset")
             guard let before = try snapshot(config) else { return "尚无配置，无需重置。" }
             let disabled = root.appendingPathComponent("config.toml.disabled-\(UUID().uuidString)")
             guard try snapshot(config) == before else {
                 throw AppError(message: "配置已被其他程序改动，请关闭后重试。")
             }
+            log.event("rename_config", "Renaming config to a unique disabled file")
             try files.moveItem(at: config, to: disabled)
             return "配置已重置，旧文件已保留为 \(disabled.lastPathComponent)。请重新选择连接。"
         }
 
+        log.event("prepare_config", "Validating configuration update")
+        if operation == .configure && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw AppError(message: "请先填写易来 API Key，再点击“切换到易来 API”。")
+        }
         let beforeConfig = try snapshot(config)
         let before: String
         if let beforeConfig {
@@ -149,9 +219,11 @@ final class PlatformService {
         var configChanged = false
         var authRemoved = false
         do {
+            log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
             if switching {
+                log.event("delete_auth", "Removing only auth.json when present")
                 guard try snapshot(auth) == beforeAuth else {
                     throw AppError(message: "登录文件已被其他程序改动，请关闭后重试。")
                 }
@@ -159,17 +231,31 @@ final class PlatformService {
                     try files.removeItem(at: auth)
                     authRemoved = true
                 }
+                log.event("sync_history", "Synchronizing local history")
                 _ = try history()
             }
         } catch {
+            log.event("switch_failed", error.localizedDescription)
             var failures: [String] = []
             if configChanged {
-                do { try restore(beforeConfig, config) }
-                catch { failures.append("连接配置") }
+                log.event("rollback_config", "Restoring prior configuration")
+                do {
+                    try restore(beforeConfig, config)
+                    log.event("rollback_config", "Restored")
+                } catch {
+                    failures.append("连接配置")
+                    log.event("rollback_config", "Restore failed: \(error.localizedDescription)")
+                }
             }
             if authRemoved {
-                do { try restore(beforeAuth, auth) }
-                catch { failures.append("登录文件") }
+                log.event("rollback_auth", "Restoring prior auth.json")
+                do {
+                    try restore(beforeAuth, auth)
+                    log.event("rollback_auth", "Restored")
+                } catch {
+                    failures.append("登录文件")
+                    log.event("rollback_auth", "Restore failed: \(error.localizedDescription)")
+                }
             }
             guard failures.isEmpty else {
                 throw AppError(message: "切换失败，\(failures.joined(separator: "、"))未能还原：\(error.localizedDescription)")
@@ -186,7 +272,7 @@ final class PlatformService {
 }
 
 func selfTest() throws {
-    for test in [yilai_config_self_test, yilai_history_self_test] {
+    for test in [yilai_config_self_test, yilai_history_self_test, yilai_diagnostic_self_test] {
         var error: UnsafeMutablePointer<CChar>?
         let ok = test(&error)
         let detail = error.map { String(cString: $0) } ?? "Core test failed"
@@ -288,4 +374,26 @@ func selfTest() throws {
     try check(try text("auth.json") == auth && text("sessions/active.jsonl") == beforeHistory, "Reset changed auth/history")
     _ = try service.run(.cleanup, requireClosed: false)
     try check(try text("auth.json") == auth, "Empty reset changed auth")
+
+    // Malformed input may appear in a parser error: both UI and logs must redact it.
+    let malformed = "experimental_bearer_token = 'sk-test-key\n"
+    try put("config.toml", malformed)
+    var safeError = ""
+    do { _ = try service.run(.configure, key: "sk-test-key", requireClosed: false) }
+    catch { safeError = error.localizedDescription }
+    try check(!safeError.isEmpty && !safeError.contains("sk-test-key"), "Displayed error leaked API key")
+    try check(try text("config.toml") == malformed && text("auth.json") == auth, "Invalid config changed state")
+
+    // Logging is best-effort even if its directory name is occupied by a file.
+    let noLogRoot = root.appendingPathComponent("no-log", isDirectory: true)
+    try files.createDirectory(at: noLogRoot, withIntermediateDirectories: true)
+    try Data("occupied".utf8).write(to: noLogRoot.appendingPathComponent("yilai-switcher-logs"))
+    _ = try PlatformService(root: noLogRoot).run(.cleanup, requireClosed: false)
+
+    let logFiles = try files.contentsOfDirectory(at: service.logsDirectory, includingPropertiesForKeys: [.isRegularFileKey])
+        .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+    try check(!logFiles.isEmpty, "Operation diagnostics were not created")
+    let logText = try logFiles.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+    try check(logText.contains("rollback_auth") && logText.contains("failure"), "Failure/rollback diagnostics missing")
+    try check(!logText.contains("sk-test-key"), "Diagnostics leaked the API key")
 }

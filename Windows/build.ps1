@@ -17,7 +17,7 @@ try {
     & "$bin/llvm-windres.exe" --target=pe-x86-64 app.rc -O coff -o "$output/resources.o"
     if($LASTEXITCODE -ne 0) { throw "Resource compilation failed" }
     $compileArgs = @('-std=c++17','-O2','-DUNICODE','-D_UNICODE','-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-municode','-mwindows','-static','-static-libgcc','-static-libstdc++','-Wno-deprecated-literal-operator',
-        '-I',"$root/Sources/ConfigRewrite/include",'-I',"$root/Sources/HistorySync/include",'App.cpp','Platform.cpp',"$root/Sources/ConfigRewrite/config_rewrite.cpp", "$root/Sources/HistorySync/history_sync.cpp",$sqlite,"$output/resources.o",'-o',"$output/YilaiCodexSwitcher.exe",'-lcomctl32','-lshell32','-lole32','-luuid','-lgdi32','-luser32','-ladvapi32','-lwindowscodecs')
+        '-I',"$root/Sources/ConfigRewrite/include",'-I',"$root/Sources/HistorySync/include",'-I',"$root/Sources/Diagnostics/include",'App.cpp','Platform.cpp',"$root/Sources/ConfigRewrite/config_rewrite.cpp", "$root/Sources/HistorySync/history_sync.cpp", "$root/Sources/Diagnostics/diagnostics.cpp",$sqlite,"$output/resources.o",'-o',"$output/YilaiCodexSwitcher.exe",'-lcomctl32','-lshell32','-lole32','-luuid','-lgdi32','-luser32','-ladvapi32','-lwindowscodecs')
     & "$bin/x86_64-w64-mingw32-clang++.exe" @compileArgs
     if($LASTEXITCODE -ne 0) { throw "Windows compilation failed" }
     & "$bin/llvm-strip.exe" --strip-all "$output/YilaiCodexSwitcher.exe"

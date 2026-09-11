@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .target(name: "ConfigRewrite", path: "Sources/ConfigRewrite", publicHeadersPath: "include"),
         .target(name: "HistorySync", dependencies: ["ConfigRewrite"], path: "Sources/HistorySync", publicHeadersPath: "include"),
-        .executableTarget(name: "YilaiCodexSwitcherMac", dependencies: ["ConfigRewrite", "HistorySync"], path: "Sources/App")
+        .target(name: "Diagnostics", path: "Sources/Diagnostics", publicHeadersPath: "include"),
+        .executableTarget(name: "YilaiCodexSwitcherMac", dependencies: ["ConfigRewrite", "HistorySync", "Diagnostics"], path: "Sources/App")
     ], cxxLanguageStandard: .cxx17
 )

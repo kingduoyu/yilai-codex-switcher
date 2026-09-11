@@ -12,13 +12,14 @@ final class Controller: ObservableObject {
 
     init() { mode = service.mode() }
 
+    func showLogs() {
+        if !NSWorkspace.shared.open(service.logsDirectory) {
+            message = "日志目录暂时无法打开。可能尚未生成日志，或目录没有访问权限。"
+        }
+    }
+
     func execute(_ operation: Operation) {
         guard !busy else { return }
-        if operation == .configure && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            failed = true
-            message = "请先填写易来 API Key，再点击“切换到易来 API”。"
-            return
-        }
         busy = true
         failed = false
         message = operation == .cleanup ? "正在重置配置…" : "正在切换并同步本地历史，请稍候…"
@@ -153,6 +154,13 @@ struct Content: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if model.failed {
+                    Button("查看日志") { model.showLogs() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 12)
+                }
                 Button("重置配置") { model.execute(.cleanup) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
