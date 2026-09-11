@@ -2,7 +2,8 @@
 
 Date: 2026-09-11 (Asia/Shanghai).
 
-Publication: pending remote asset verification.
+Publication confirmed: 09/11/2026 10:43:59 (UTC; 2026-09-11 18:43:59 +08:00). GitHub latest is v3.3.1, neither draft nor prerelease. All four uploaded assets matched local SHA-256, byte lengths and uploaded state before publication. Local publish/ delivery copies also matched.
+Release tag commit: 2d040db1afaab59904166f4f6e4bf25f90f8464e.
 Release: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.1
 
 Application source commit (both platforms): 1de900b4c8d8061f17aade84d6c12a261d14135c. Subsequent release-tag changes contain only documentation, runtime test coverage and checksums; application build inputs are unchanged.
