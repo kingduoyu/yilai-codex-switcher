@@ -1,6 +1,9 @@
 # v3.3.4 Release Manifest
 
 Date: 2026-09-11 (Asia/Shanghai).
+Publication confirmed: 2026-09-11T12:42:41Z (UTC). GitHub latest is v3.3.4, neither draft nor prerelease. Four uploaded assets matched local hashes, sizes and state before publication; published application assets rechecked. Local publish binaries, checksum and previews hash-verified. The running old Windows executable was renamed and retained so the canonical delivery path could receive the new binary without terminating the user's open window.
+Release tag commit: 8791f4c8d5a1a7c761aa894b6725cd2102ca9e01.
+
 Application source commit (both platforms): adba74e4e39c642a65398fbb549f6f8d92741646. Later release-tag changes are documentation/checksums only.
 
 ## Fix
