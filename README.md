@@ -1,49 +1,41 @@
-# 易来 Codex 切换器
+# 易来 Codex 配置器 v3.3.0
 
-面向 Codex CLI 与 Codex 桌面版的一键 API 配置工具。填写易来 API Key 后，可以在易来 API 与 OpenAI 官方配置之间安全切换。
+Windows 与 macOS 原生重写版。为 CCS 已有连接启用生图，并统一这台电脑已有的 Codex 历史。
 
 ## 下载
 
-- Windows 10/11 x64：从 [Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 下载 v3.2.4 `YilaiCodexSwitcher.exe`，无需安装运行库。
-- macOS 13+：下载 v3.2.4 `YilaiCodexSwitcher-macOS-universal.dmg`，同时支持 Intel 与 Apple Silicon。
+在本仓库 Releases 下载 Windows 的 YilaiCodexSwitcher.exe，或 macOS 的 YilaiCodexSwitcher-macOS-universal.dmg（Intel / Apple Silicon）。Windows 10/11 x64、macOS 13+。无需额外安装运行库。macOS 采用 ad-hoc 签名，首次打开可能需要右键选择“打开”。
 
-当前 Windows 版本未进行代码签名，macOS 版本使用 ad-hoc 签名且未公证。首次打开若被系统拦截，请查看 Release 中的平台说明。
+## 操作
 
-## 使用
+操作前完全退出 Codex 和 CC-Switch，包括后台进程。默认使用当前用户的 .codex，设置 CODEX_HOME 时跟随该目录。
 
-1. 完全退出 Codex 和 CC-Switch。
-2. 打开易来 Codex 切换器。
-3. 粘贴完整 API Key，不要添加 `Bearer` 或引号。
-4. 点击“切换到易来 API”。
-5. 重新打开 Codex。
+- **启用生图**：只启用 image_generation，并给当前自定义 provider 补生图请求头；保留模型、模型目录、其他请求头、认证和无关配置。无需重新填写 Key。
+- **配置易来连接**：显式使用输入 Key 配置 CCS 兼容的 custom 连接。保留现有模型及目录，不清理官方登录。请使用 CCS / Codex 选择服务端支持的模型。
+- **同步全部本地历史**：先备份，再将 sessions、archived_sessions 和 state_5.sqlite 中已有会话统一归入 custom；同时让当前连接使用这一分类。消息、标题、归档状态和登录凭据不变，不下载云端历史。
+- **撤销上次同步**：按备份还原原有会话归属，保留之后新增的消息和会话；若连接配置已被其他工具改动，则不覆盖它。
+- **清理旧登录**：仅用于有独立 bearer Key 的易来直连。旧登录及本工具旧备份移入 Windows 回收站 / macOS 废纸篓，解除本工具旧 yilai-model-catalog.json 的引用。保留 CCS 和其他自定义目录文件、历史及系统钥匙串。官方模式和依赖官方认证的连接禁止清理。
 
-需要切回官方时，完全退出 Codex 和 CC-Switch，点击“切换回官方”，再重新打开并登录。两个方向均清理旧的文件登录凭据，不再备份或恢复旧登录；官方模式删除第三方 provider 选择、定义、Key 和模型目录引用，保留当前插件等通用设置。两个模式均使用 file 凭据存储，不读取旧 Keychain 登录，也不删除系统凭据库。
+## 与 CCS 配合
 
-## Windows / macOS v3.2.4
+切回官方请使用 CCS。若要在 CCS 的官方/第三方切换后持续共享同一历史分类，请在 CCS 开启“统一 Codex 会话历史”；否则需要在切换后再次点击本工具的同步。单纯更换登录账号不会改变同一 CODEX_HOME 的已同步记录。
 
-清理的授权文件和旧备份文件现在移入 Windows 回收站或 macOS 废纸篓，不再直接永久删除；移入失败会报错并尝试回滚，不改用永久删除。原目录不保留登录备份，也不自动从回收站恢复。回滚后回收站可能留有副本。回收站中的文件含登录凭据，请勿分享；清空后将失去该恢复途径。
+本工具不修改 CCS 程序或其设置。同步机制参考 CCS v3.20.2：统一 provider 分类、官方使用原生认证、同时迁移 JSONL 与 state 索引，并保留备份。不同账号只共享同一电脑、同一 Codex 数据目录中已有的记录；归档会话仍保持归档。
 
-易来模式固定显示 Sol (`gpt-5.6-sol`)、Terra (`gpt-5.6-terra`) 和 6 (`gpt-6-astra`)。旧用户完全退出 Codex 与 CC-Switch，重新用新版点击“切换到易来 API”即可覆盖旧模型目录配置，无需删除 `.codex` 或先切回官方；旧登录备份会清理，插件、会话和旧缓存保留。重开 Codex 后生效，切回官方会解除目录限制。模型清单固定，不会自动跟随服务器后续增删。
+CCS 的模型获取和目录由其配置决定，并非本工具自动更新。v3.3.0 不再生成固定三个模型的目录，也不强制切换到 Sol。模型名能填写/出现在目录中，不等于服务端已授权调用该模型。
 
-已用 Codex app-server 0.153.4 在隔离目录验证配置加载及模型列表。过旧 Codex（例如不认识 `max` 推理等级的 0.130.0-alpha.5）需先升级，旧配置器配置迁移与旧 Codex 运行时兼容性是两回事。
+## 历史保护
 
-新版只重写受管理的配置，保留 MCP、插件和权限等无关配置值；会规范格式并移除原注释。配置中已有语法错误或重复键时会报错且不修改原文件。旧 profile 选择会展开为主配置以兼容当前运行时。
+备份在 CODEX_HOME/yilai-history-backups，每次同步有独立目录，包含 config、完整会话文件、SQLite 备份与迁移清单。备份可能包含私密消息和连接凭据，请只留在本机。
 
-尚未验证真实账号下的 Mac 登录及在线生图，不把自动化配置检查等同于这些功能的实机验收。
+只更新会话归属字段。同步发现损坏 JSONL、重复会话 ID、未知 state 数据库版本或并发改动时停止并回滚；失败日志及备份应保留。若操作被中断，可用“撤销上次同步”恢复未完成的同步。支持 config 的 sqlite_home 或 CODEX_SQLITE_HOME 指向的额外 state_5.sqlite。系统目录别名会先解析；历史目录内部的链接不迁移。
 
-## 构建
+## 开发
 
-Windows 需要 Windows 10/11 和 LLVM-MinGW UCRT：
+全新源码：Sources/ConfigRewrite（配置规则）、Sources/HistorySync（历史迁移与撤销）、Sources/App（macOS）、Windows/App.cpp 与 Platform.cpp（Windows）。旧版本可从 v3.2.4 等 Git 标签获取；新应用不依赖旧版实现或固定模型目录。
 
-```powershell
-winget install --id MartinStorsjo.LLVM-MinGW.UCRT --exact
-pwsh -File Windows/build.ps1
-```
+Windows：pwsh -File Windows/build.ps1，随后执行 dist/windows/YilaiCodexSwitcher.exe --self-test。
 
-macOS 需要 macOS 13+、Xcode Command Line Tools 和 Swift 5.9+：
+macOS：bash build-macos.sh；正式 DMG/ZIP 由 Build macOS app 工作流构建、执行自测并生成界面截图。
 
-```bash
-bash build-macos.sh
-```
-
-两个实现都会运行隔离配置自测，不会操作构建机器的真实 Codex 配置。本仓库不包含 API Key、用户配置或认证文件。
+校验值见 SHA256SUMS.txt，发布事实见 releases/v3.3.0/RELEASE-MANIFEST.md。

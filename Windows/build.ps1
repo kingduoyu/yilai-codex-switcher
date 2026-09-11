@@ -1,42 +1,25 @@
-param(
-    [string]$Configuration = "Release",
-    [string]$OutputDirectory = "..\\dist\\windows"
-)
-
+param([string]$OutputDirectory = "../dist/windows")
 $ErrorActionPreference = "Stop"
-$projectDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-$outputPath = [System.IO.Path]::GetFullPath((Join-Path $projectDirectory $OutputDirectory))
-$packageRoot = Join-Path $env:LOCALAPPDATA "Microsoft\\WinGet\\Packages\\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe"
-$toolchain = Get-ChildItem $packageRoot -Directory -Filter "llvm-mingw-*-ucrt-x86_64" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $toolchain) {
-    throw "LLVM-MinGW was not found. Install MartinStorsjo.LLVM-MinGW.UCRT with winget."
-}
+$root = Split-Path -Parent $PSScriptRoot
+$output = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $OutputDirectory))
+$packageRoot = Join-Path $env:LOCALAPPDATA "Microsoft/WinGet/Packages/MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe"
+$toolchain = Get-ChildItem $packageRoot -Directory -Filter "llvm-mingw-*-ucrt-x86_64" | Select-Object -First 1
+if(-not $toolchain) { throw "LLVM-MinGW UCRT is required" }
 $bin = Join-Path $toolchain.FullName "bin"
-$compiler = Join-Path $bin "x86_64-w64-mingw32-clang++.exe"
-$resourceCompiler = Join-Path $bin "llvm-windres.exe"
-$strip = Join-Path $bin "llvm-strip.exe"
-
-New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
-$object = Join-Path $projectDirectory "app-resources.o"
-$output = Join-Path $outputPath "YilaiCodexSwitcher.exe"
-
-Push-Location $projectDirectory
+New-Item -ItemType Directory -Force -Path $output | Out-Null
+$sqlite = Join-Path $output "sqlite3.o"
+if(!(Test-Path $sqlite) -or (Get-Item "$root/Sources/HistorySync/vendor/sqlite3.c").LastWriteTimeUtc -gt (Get-Item $sqlite).LastWriteTimeUtc) {
+    & "$bin/x86_64-w64-mingw32-clang.exe" -O2 -c "$root/Sources/HistorySync/vendor/sqlite3.c" -o $sqlite
+    if($LASTEXITCODE -ne 0) { throw "SQLite compilation failed" }
+}
+Push-Location $PSScriptRoot
 try {
-    & $resourceCompiler --target=pe-x86-64 "app.rc" -O coff -o $object
-    if ($LASTEXITCODE -ne 0) { throw "Resource compilation failed with exit code $LASTEXITCODE." }
-
-    $optimization = if ($Configuration -eq "Debug") { "-O0" } else { "-O2" }
-    & $compiler -std=c++20 $optimization -DUNICODE -D_UNICODE -DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 `
-        -finput-charset=UTF-8 -municode -mwindows -static -static-libgcc -static-libstdc++ `
-        -I "../Sources/ConfigRewrite/include" `
-        "main.cpp" "config.cpp" "../Sources/ConfigRewrite/config_rewrite.cpp" $object -o $output `
-        -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lcomctl32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -ladvapi32
-    if ($LASTEXITCODE -ne 0) { throw "Native C++ build failed with exit code $LASTEXITCODE." }
-
-    if ($Configuration -ne "Debug") { & $strip --strip-all $output }
-}
-finally {
-    Pop-Location
-}
-
-Get-Item $output | Select-Object FullName, Length, LastWriteTime
+    & "$bin/llvm-windres.exe" --target=pe-x86-64 app.rc -O coff -o "$output/resources.o"
+    if($LASTEXITCODE -ne 0) { throw "Resource compilation failed" }
+    $compileArgs = @('-std=c++17','-O2','-DUNICODE','-D_UNICODE','-DWINVER=0x0A00','-D_WIN32_WINNT=0x0A00','-municode','-mwindows','-static','-static-libgcc','-static-libstdc++','-Wno-deprecated-literal-operator',
+        '-I',"$root/Sources/ConfigRewrite/include",'-I',"$root/Sources/HistorySync/include",'App.cpp','Platform.cpp',"$root/Sources/ConfigRewrite/config_rewrite.cpp", "$root/Sources/HistorySync/history_sync.cpp",$sqlite,"$output/resources.o",'-o',"$output/YilaiCodexSwitcher.exe",'-lcomctl32','-lshell32','-lole32','-luuid','-lgdi32','-luser32','-ladvapi32','-lwindowscodecs')
+    & "$bin/x86_64-w64-mingw32-clang++.exe" @compileArgs
+    if($LASTEXITCODE -ne 0) { throw "Windows compilation failed" }
+    & "$bin/llvm-strip.exe" --strip-all "$output/YilaiCodexSwitcher.exe"
+} finally { Pop-Location }
+Get-Item "$output/YilaiCodexSwitcher.exe" | Select-Object FullName,Length
