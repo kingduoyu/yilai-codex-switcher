@@ -3,95 +3,166 @@
 #include "Platform.h"
 #include "resource.h"
 #include <commctrl.h>
-#include <fstream>
-#include <iostream>
-#include <memory>
 #include <shellapi.h>
-#include <thread>
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <fstream>
+#include <memory>
+#include <thread>
+
 namespace {
 constexpr UINT Done = WM_APP + 1;
-constexpr int Images = 1001, Configure = 1002, Sync = 1003, Undo = 1004,
-              Cleanup = 1005, Eye = 1006;
-HWND keyBox, modeLabel, resultBox;
-HFONT bodyFont, titleFont;
-HBRUSH background;
-bool busy = false, showKey = false;
+constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004;
+constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
+                   Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
+                   Border = RGB(225, 231, 240);
+HWND keyBox, windowHandle;
+HFONT bodyFont, titleFont, smallFont, buttonFont;
+HBRUSH background, whiteBrush;
+bool busy = false, showKey = false, failed = false;
+std::wstring modeText, statusText = L"准备就绪。填写 Key，选择连接方式即可。";
 struct Result {
   bool ok;
   std::wstring message;
   int operation;
 };
 std::wstring fromUtf8(const std::string &s) {
-  int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), nullptr, 0);
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), nullptr, 0);
   std::wstring out(n, L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), int(s.size()), out.data(), n);
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), out.data(), n);
   return out;
+}
+HFONT font(int size, int weight = FW_NORMAL) {
+  return CreateFontW(-size, 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+}
+void text(HDC dc, const std::wstring &value, RECT rect, HFONT f, COLORREF color,
+          UINT flags = DT_LEFT | DT_SINGLELINE | DT_VCENTER) {
+  auto previous = SelectObject(dc, f);
+  SetTextColor(dc, color);
+  SetBkMode(dc, TRANSPARENT);
+  DrawTextW(dc, value.c_str(), -1, &rect, flags);
+  SelectObject(dc, previous);
+}
+void rounded(HDC dc, RECT r, COLORREF fill, COLORREF stroke, int radius) {
+  auto brush = CreateSolidBrush(fill);
+  auto pen = CreatePen(PS_SOLID, 1, stroke);
+  auto oldBrush = SelectObject(dc, brush);
+  auto oldPen = SelectObject(dc, pen);
+  RoundRect(dc, r.left, r.top, r.right, r.bottom, radius, radius);
+  SelectObject(dc, oldBrush);
+  SelectObject(dc, oldPen);
+  DeleteObject(brush);
+  DeleteObject(pen);
 }
 void refresh() {
   try {
-    SetWindowTextW(modeLabel, (L"当前连接：" + app::mode(app::home())).c_str());
+    modeText = app::mode(app::home());
   } catch (...) {
-    SetWindowTextW(modeLabel, L"当前连接：配置需要检查");
+    modeText = L"配置待重置";
   }
+  if (windowHandle)
+    InvalidateRect(windowHandle, nullptr, FALSE);
 }
-HWND control(HWND parent, LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y,
-             int w, int h, int id = 0) {
-  HWND child =
-      CreateWindowExW(cls == std::wstring(L"EDIT") ? WS_EX_CLIENTEDGE : 0, cls,
-                      text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent,
-                      HMENU(INT_PTR(id)), nullptr, nullptr);
-  SendMessageW(child, WM_SETFONT, WPARAM(bodyFont), TRUE);
-  return child;
+HWND button(HWND parent, int id, const wchar_t *label, int x, int y, int w,
+            int h) {
+  return CreateWindowW(L"BUTTON", label,
+                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, x, y,
+                       w, h, parent, HMENU(INT_PTR(id)), nullptr, nullptr);
+}
+void paint(HWND window, HDC dc) {
+  RECT r;
+  GetClientRect(window, &r);
+  FillRect(dc, &r, background);
+  rounded(dc, {28, 28, 74, 74}, Blue, Blue, 14);
+  text(dc, L"Y", {28, 28, 74, 74}, titleFont, RGB(255, 255, 255),
+       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  text(dc, L"易来 Codex", {88, 22, 440, 58}, titleFont, Ink);
+  text(dc, L"选择连接，继续创作。", {88, 59, 440, 82}, smallFont, Muted);
+  rounded(dc, {523, 39, 712, 70}, RGB(234, 240, 250), RGB(234, 240, 250), 30);
+  text(dc, modeText, {531, 39, 704, 70}, smallFont, RGB(72, 92, 130),
+       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  rounded(dc, {28, 114, 712, 364}, RGB(255, 255, 255), Border, 20);
+  text(dc, L"易来 API Key", {52, 138, 330, 166}, buttonFont, Ink);
+  text(dc, L"仅切换到 API 时需要", {424, 138, 688, 166}, smallFont, Muted,
+       DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+  rounded(dc, {52, 180, 688, 228}, RGB(255, 255, 255), Border, 10);
+  text(dc, L"生图与本地会话历史同步会自动完成", {52, 308, 688, 338}, smallFont,
+       Muted, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+  text(dc,
+       failed ? L"暂未完成"
+       : busy ? L"正在切换"
+              : L"连接状态",
+       {32, 385, 132, 410}, smallFont, failed ? RGB(177, 67, 56) : Muted);
+  text(dc, statusText, {32, 415, 708, 465}, bodyFont,
+       failed ? RGB(157, 55, 46) : Ink, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+  text(dc, L"操作前请退出 Codex 和 CC-Switch", {28, 476, 540, 502}, smallFont,
+       Muted);
+}
+void drawButton(const DRAWITEMSTRUCT &item) {
+  bool enabled = !(item.itemState & ODS_DISABLED);
+  bool down = item.itemState & ODS_SELECTED;
+  const bool primary = item.CtlID == Api,
+             quiet = item.CtlID == Reset || item.CtlID == Eye;
+  COLORREF fill = quiet ? (item.CtlID == Reset ? Canvas : RGB(255, 255, 255))
+                  : primary ? (enabled ? down ? RGB(29, 78, 216) : Blue
+                                       : RGB(161, 184, 234))
+                  : down    ? RGB(239, 243, 249)
+                            : RGB(255, 255, 255);
+  rounded(item.hDC, item.rcItem, fill,
+          quiet     ? fill
+          : primary ? fill
+                    : Border,
+          12);
+  wchar_t label[100]{};
+  GetWindowTextW(item.hwndItem, label, 100);
+  text(item.hDC, label, item.rcItem, quiet ? smallFont : buttonFont,
+       enabled ? (primary ? RGB(255, 255, 255)
+                  : quiet ? Muted
+                          : Ink)
+               : RGB(158, 170, 190),
+       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  if (item.itemState & ODS_FOCUS) {
+    auto focus = item.rcItem;
+    InflateRect(&focus, -4, -4);
+    DrawFocusRect(item.hDC, &focus);
+  }
 }
 void begin(HWND window, int id) {
   if (busy)
     return;
-  if (id == Cleanup &&
-      MessageBoxW(window,
-                  L"仅用于易来连接的旧登录干扰。旧登录和本工具旧备份会移入回收"
-                  L"站，旧固定模型目录会解除引用。",
-                  L"清理旧登录",
-                  MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
-    return;
-  if (id == Sync &&
-      MessageBoxW(
-          window,
-          L"将当前 Codex 目录内全部本地会话统一为 custom "
-          L"分类。先自动备份，再更新会话和索引；登录、消息内容保持不变。\n\n若"
-          L"使用 CCS 切换官方，请同时开启 CCS 的“统一 Codex 会话历史”。",
-          L"同步全部本地历史", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
-    return;
-  if (id == Undo &&
-      MessageBoxW(window,
-                  L"按上次同步备份还原会话归属。保留同步后新增的消息和会话；已"
-                  L"被其他工具改过的连接配置不覆盖。",
-                  L"撤销上次同步", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
-    return;
-  int length = GetWindowTextLengthW(keyBox);
+  const int length = GetWindowTextLengthW(keyBox);
   std::wstring key(size_t(length) + 1, L'\0');
   GetWindowTextW(keyBox, key.data(), length + 1);
   key.resize(length);
-  auto action = id == Images      ? app::Action::Images
-                : id == Configure ? app::Action::Configure
-                : id == Sync      ? app::Action::Sync
-                : id == Undo      ? app::Action::Undo
-                                  : app::Action::Cleanup;
+  if (id == Api && key.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+    failed = true;
+    statusText = L"请先粘贴易来 API Key，再点击切换。";
+    SetFocus(keyBox);
+    InvalidateRect(window, nullptr, FALSE);
+    return;
+  }
+  auto action = id == Api        ? app::Action::Configure
+                : id == Official ? app::Action::Official
+                                 : app::Action::Cleanup;
   busy = true;
-  for (int button : {Images, Configure, Sync, Undo, Cleanup})
-    EnableWindow(GetDlgItem(window, button), FALSE);
-  SetWindowTextW(resultBox,
-                 L"正在处理，请勿启动 Codex 或 CCS。历史较多时请等待完成。");
-  std::thread([window, key = std::move(key), action, id]() {
+  failed = false;
+  statusText =
+      id == Reset ? L"正在停用旧配置…" : L"正在配置连接并同步本地历史，请稍候…";
+  for (int child : {Api, Official, Reset, Eye})
+    EnableWindow(GetDlgItem(window, child), FALSE);
+  EnableWindow(keyBox, FALSE);
+  InvalidateRect(window, nullptr, FALSE);
+  std::thread([window, action, id, key = std::move(key)] {
     auto result = std::make_unique<Result>();
     result->operation = id;
     try {
       result->message = app::run(action, app::home(), key);
       result->ok = true;
-    } catch (const std::exception &e) {
+    } catch (const std::exception &error) {
       result->ok = false;
-      result->message = fromUtf8(e.what());
+      result->message = fromUtf8(error.what());
     }
     PostMessageW(window, Done, 0, LPARAM(result.release()));
   }).detach();
@@ -99,87 +170,82 @@ void begin(HWND window, int id) {
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
   switch (message) {
   case WM_CREATE: {
-    bodyFont = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                           DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
-                           L"Microsoft YaHei UI");
-    titleFont = CreateFontW(-28, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
-                            L"Microsoft YaHei UI");
-    auto title = control(window, L"STATIC", L"易来 Codex 配置器", SS_LEFT, 32,
-                         24, 760, 44);
-    SendMessageW(title, WM_SETFONT, WPARAM(titleFont), TRUE);
-    control(window, L"STATIC", L"CCS 配置增强 · 本地历史统一     v3.3.0",
-            SS_LEFT, 32, 72, 800, 32);
-    modeLabel =
-        control(window, L"STATIC", L"当前连接", SS_LEFT, 32, 114, 800, 30);
-    control(window, L"BUTTON", L"启用生图 · 保留现有模型和登录",
-            BS_DEFPUSHBUTTON | WS_TABSTOP, 32, 155, 800, 50, Images);
-    control(window, L"STATIC",
-            L"易来 API Key（仅配置连接时填写；启用生图无需填写）", SS_LEFT, 32,
-            228, 800, 28);
-    keyBox =
-        control(window, L"EDIT", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP,
-                32, 265, 532, 38);
+    windowHandle = window;
+    bodyFont = font(15);
+    titleFont = font(27, FW_SEMIBOLD);
+    smallFont = font(13);
+    buttonFont = font(16, FW_MEDIUM);
+    keyBox = CreateWindowExW(
+        0, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, 66,
+        193, 552, 26, window, nullptr, nullptr, nullptr);
+    SendMessageW(keyBox, WM_SETFONT, WPARAM(bodyFont), TRUE);
     SendMessageW(keyBox, EM_SETPASSWORDCHAR, L'●', 0);
-    control(window, L"BUTTON", L"显示", BS_PUSHBUTTON | WS_TABSTOP, 574, 265,
-            64, 38, Eye);
-    control(window, L"BUTTON", L"配置易来连接", BS_PUSHBUTTON | WS_TABSTOP, 650,
-            265, 182, 38, Configure);
-    control(window, L"BUTTON", L"同步全部本地历史", BS_PUSHBUTTON | WS_TABSTOP,
-            32, 333, 258, 46, Sync);
-    control(window, L"BUTTON", L"撤销上次同步", BS_PUSHBUTTON | WS_TABSTOP, 304,
-            333, 258, 46, Undo);
-    control(window, L"BUTTON", L"清理旧登录", BS_PUSHBUTTON | WS_TABSTOP, 576,
-            333, 256, 46, Cleanup);
-    control(window, L"STATIC",
-            L"操作前完全退出 Codex 和 CC-Switch。切回官方请使用 CCS。", SS_LEFT,
-            32, 399, 800, 30);
-    control(
-        window, L"STATIC",
-        L"历史同步只处理本机已有记录，自动备份；不会下载其他账号的云端历史。",
-        SS_LEFT, 32, 436, 800, 48);
-    resultBox = control(
-        window, L"EDIT", L"准备就绪。默认启用生图不会改写模型目录或清理登录。",
-        ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 32, 496, 800,
-        98);
+    SendMessageW(keyBox, EM_SETCUEBANNER, FALSE, LPARAM(L"粘贴你的 API Key"));
+    button(window, Eye, L"显示", 628, 190, 48, 28);
+    button(window, Api, L"切换到易来 API", 52, 248, 309, 50);
+    button(window, Official, L"切换回官方设置", 377, 248, 311, 50);
+    button(window, Reset, L"重置配置", 624, 476, 88, 26);
     refresh();
     return 0;
   }
+  case WM_PAINT: {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(window, &ps);
+    paint(window, dc);
+    EndPaint(window, &ps);
+    return 0;
+  }
+  case WM_PRINTCLIENT:
+    paint(window, HDC(w));
+    return 0;
+  case WM_DRAWITEM:
+    drawButton(*reinterpret_cast<DRAWITEMSTRUCT *>(l));
+    return TRUE;
+  case WM_ERASEBKGND:
+    return 1;
+  case WM_CTLCOLOREDIT:
+    SetTextColor(HDC(w), Ink);
+    SetBkColor(HDC(w), RGB(255, 255, 255));
+    return LRESULT(whiteBrush);
   case WM_COMMAND:
     if (HIWORD(w) == BN_CLICKED) {
       int id = LOWORD(w);
       if (id == Eye) {
         showKey = !showKey;
         SendMessageW(keyBox, EM_SETPASSWORDCHAR, showKey ? 0 : L'●', 0);
-        InvalidateRect(keyBox, nullptr, TRUE);
         SetWindowTextW(GetDlgItem(window, Eye), showKey ? L"隐藏" : L"显示");
-      } else if (id >= Images && id <= Cleanup)
+        InvalidateRect(keyBox, nullptr, TRUE);
+      } else if (id == Api || id == Official || id == Reset)
         begin(window, id);
     }
     return 0;
   case Done: {
     std::unique_ptr<Result> result(reinterpret_cast<Result *>(l));
     busy = false;
-    for (int id : {Images, Configure, Sync, Undo, Cleanup})
+    failed = !result->ok;
+    statusText = result->message;
+    for (int id : {Api, Official, Reset, Eye})
       EnableWindow(GetDlgItem(window, id), TRUE);
-    SetWindowTextW(resultBox, result->message.c_str());
-    if (result->ok && result->operation == Configure)
+    EnableWindow(keyBox, TRUE);
+    if (result->ok && result->operation == Api)
       SetWindowTextW(keyBox, L"");
     refresh();
     return 0;
   }
-  case WM_CTLCOLORSTATIC:
-    SetTextColor(HDC(w), RGB(30, 48, 70));
-    SetBkColor(HDC(w), RGB(248, 250, 253));
-    return LRESULT(background);
   case WM_CLOSE:
     if (!busy)
       DestroyWindow(window);
     return 0;
+  case WM_QUERYENDSESSION:
+    return busy ? FALSE : TRUE;
   case WM_DESTROY:
     DeleteObject(bodyFont);
     DeleteObject(titleFont);
+    DeleteObject(smallFont);
+    DeleteObject(buttonFont);
     DeleteObject(background);
+    DeleteObject(whiteBrush);
     PostQuitMessage(0);
     return 0;
   }
@@ -193,17 +259,32 @@ void capture(HWND window, const wchar_t *filename) {
   HBITMAP image = CreateCompatibleBitmap(dc, r.right, r.bottom);
   auto prior = SelectObject(mem, image);
   FillRect(mem, &r, background);
-  // WM_PRINT paints every child synchronously; DWM capture can miss controls
-  // before the first message loop has completed.
-  RECT outer;
-  GetWindowRect(window, &outer);
-  POINT clientOrigin{0, 0};
-  ClientToScreen(window, &clientOrigin);
-  SetViewportOrgEx(mem, outer.left - clientOrigin.x,
-                   outer.top - clientOrigin.y, nullptr);
-  SendMessageW(window, WM_PRINT, WPARAM(mem),
-               PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
-  SetViewportOrgEx(mem, 0, 0, nullptr);
+  paint(window, mem);
+  struct CaptureChildren {
+    HWND parent;
+    HDC dc;
+  } context{window, mem};
+  EnumChildWindows(
+      window,
+      [](HWND child, LPARAM data) -> BOOL {
+        auto &context = *reinterpret_cast<CaptureChildren *>(data);
+        if (GetParent(child) != context.parent || !IsWindowVisible(child))
+          return TRUE;
+        RECT childRect;
+        GetWindowRect(child, &childRect);
+        MapWindowPoints(nullptr, context.parent,
+                        reinterpret_cast<POINT *>(&childRect), 2);
+        int saved = SaveDC(context.dc);
+        SetViewportOrgEx(context.dc, childRect.left, childRect.top, nullptr);
+        IntersectClipRect(context.dc, 0, 0, childRect.right - childRect.left,
+                          childRect.bottom - childRect.top);
+        SendMessageW(child, WM_PRINT, WPARAM(context.dc),
+                     PRF_CLIENT | PRF_NONCLIENT | PRF_ERASEBKGND |
+                         PRF_CHILDREN);
+        RestoreDC(context.dc, saved);
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&context));
   Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
   Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
   Microsoft::WRL::ComPtr<IWICStream> stream;
@@ -232,6 +313,7 @@ void capture(HWND window, const wchar_t *filename) {
   DeleteDC(mem);
   ReleaseDC(window, dc);
 }
+
 } // namespace
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   int argc = 0;
@@ -240,9 +322,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     std::wstring error;
     bool passed = app::selfTest(error);
     if (!passed) {
-      std::ofstream log("self-test-error.txt");
-      for (wchar_t c : error)
-        log << (c < 128 ? char(c) : '?');
+      std::ofstream out("self-test-error.txt");
+      for (auto c : error)
+        out << (c < 128 ? char(c) : '?');
     }
     LocalFree(argv);
     return passed ? 0 : 1;
@@ -251,23 +333,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   SetProcessDPIAware();
   INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&controls);
-  background = CreateSolidBrush(RGB(248, 250, 253));
+  // Load the system CJK UI family for hosts where it is installed but not
+  // registered.
+  wchar_t windows[MAX_PATH]{};
+  GetWindowsDirectoryW(windows, MAX_PATH);
+  AddFontResourceExW((std::wstring(windows) + L"\\Fonts\\msyh.ttc").c_str(),
+                     FR_PRIVATE, nullptr);
+  background = CreateSolidBrush(Canvas);
+  whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
   WNDCLASSW cls{};
   cls.hInstance = instance;
-  cls.lpszClassName = L"YilaiRewriteV330";
+  cls.lpszClassName = L"YilaiSwitcherV331";
   cls.lpfnWndProc = procedure;
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
   cls.hbrBackground = background;
   RegisterClassW(&cls);
-  RECT size{0, 0, 864, 624};
-  AdjustWindowRect(
-      &size, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-  HWND window = CreateWindowW(
-      cls.lpszClassName, L"易来 Codex 配置器 v3.3.0",
-      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT,
-      CW_USEDEFAULT, size.right - size.left, size.bottom - size.top, nullptr,
-      nullptr, instance, nullptr);
+  RECT size{0, 0, 740, 520};
+  DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  AdjustWindowRect(&size, style, FALSE);
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.1", style,
+                              CW_USEDEFAULT, CW_USEDEFAULT,
+                              size.right - size.left, size.bottom - size.top,
+                              nullptr, nullptr, instance, nullptr);
   bool screenshot = argc > 2 && std::wstring(argv[1]) == L"--screenshot";
   ShowWindow(window, screenshot ? SW_SHOWNOACTIVATE : show);
   UpdateWindow(window);
@@ -284,11 +372,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
   }
   LocalFree(argv);
-  MSG message;
-  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-    if (!IsDialogMessageW(window, &message)) {
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
+  MSG msg;
+  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (!IsDialogMessageW(window, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
     }
   }
   CoUninitialize();

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, access } from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -61,26 +61,31 @@ try{
  const before=await readFile(rollout,'utf8');
  // A separate interpreter updates only the provider in the real runtime schema.
  const py=spawnSync('python',['-c',"import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('update threads set model_provider=? where id=?',('yilai',sys.argv[2])); c.commit()",path.join(home,'state_5.sqlite'),id],{encoding:'utf8',windowsHide:true});assert.equal(py.status,0,py.stderr);
- operation('sync');assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),auth);
+ operation('configure');await assert.rejects(access(path.join(home,'auth.json')));
+ const configured=await readFile(path.join(home,'config.toml'),'utf8');
+ assert(configured.includes('requires_openai_auth = false'));assert(configured.includes('sk-isolated-test-only'));
+ await writeFile(path.join(home,'config.toml'),configured.replace('https://api.yilai-ai.com','http://127.0.0.1:'+port+'/v1'));
  const after=await readFile(rollout,'utf8');assert.equal(JSON.parse(after.split('\n')[idx]).payload.model_provider,'custom');assert.deepEqual(after.split('\n').filter((_,i)=>i!==idx),before.split('\n').filter((_,i)=>i!==idx));
  server=await new Server().init();
+ const login=await server.request('account/read',{refreshToken:false});assert.equal(login.requiresOpenaiAuth,false);assert.equal(login.account,null);facts.apiWithoutOfficialLogin=login;
  const listing=await server.request('thread/list',{modelProviders:['custom'],limit:100});assert(listing.data.some(t=>t.id===id));
  const read=await server.request('thread/read',{threadId:id,includeTurns:true});assert(JSON.stringify(read).includes('Synthetic message before history sync'));assert(JSON.stringify(read).includes('Synthetic reply'));
  await server.request('thread/resume',{threadId:id});await server.turn(id,'Synthetic message after history sync');
  const resumed=await server.request('thread/read',{threadId:id,includeTurns:true});assert(JSON.stringify(resumed).includes('Synthetic message after history sync'));
  await server.close();server=null;
- const beforeUndo=await readFile(rollout,'utf8');operation('undo');const undone=await readFile(rollout,'utf8');assert.equal(JSON.parse(undone.split('\n')[idx]).payload.model_provider,'yilai');assert.deepEqual(undone.split('\n').filter((_,i)=>i!==idx),beforeUndo.split('\n').filter((_,i)=>i!==idx));assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),auth);
- assert(requests.filter(x=>x.url.endsWith('/responses')).length>=2);for(const req of requests.filter(x=>x.url.endsWith('/responses'))){assert.equal(req.headers['x-openai-actor-authorization'],'local-image-extension');assert.equal(req.headers['x-keep'],'unchanged');assert.equal(req.body.model,'gpt-6-astra');assert(req.body.tools.some(t=>t.type==='namespace'&&t.name==='image_gen'&&t.tools.some(f=>f.name==='imagegen')), 'Native image tool missing');}
+ const beforeUndo=await readFile(rollout,'utf8');operation('undo');const undone=await readFile(rollout,'utf8');assert.equal(JSON.parse(undone.split('\n')[idx]).payload.model_provider,'yilai');assert.deepEqual(undone.split('\n').filter((_,i)=>i!==idx),beforeUndo.split('\n').filter((_,i)=>i!==idx));await assert.rejects(access(path.join(home,'auth.json')));
+ assert(requests.filter(x=>x.url.endsWith('/responses')).length>=2);for(const req of requests.filter(x=>x.url.endsWith('/responses'))){assert.equal(req.headers['x-openai-actor-authorization'],'local-image-extension');if(req===requests.filter(x=>x.url.endsWith('/responses'))[0]) assert.equal(req.headers['x-keep'],'unchanged'); else assert.equal(req.headers['x-keep'],undefined, 'Switching providers must remove the previous provider header');assert.equal(req.body.model,'gpt-6-astra');assert(req.body.tools.some(t=>t.type==='namespace'&&t.name==='image_gen'&&t.tools.some(f=>f.name==='imagegen')), 'Native image tool missing');}
  // Simulate CCS selecting official mode, then another local login credential.
  await writeFile(path.join(home,'config.toml'),"model='gpt-6-astra'\nmodel_catalog_json="+JSON.stringify(catalogPath.replaceAll('\\','/'))+"\ncli_auth_credentials_store='file'\n[analytics]\nenabled=false\n");
- operation('sync');
+ operation('official');await assert.rejects(access(path.join(home,'auth.json')));
  const officialConfig=await readFile(path.join(home,'config.toml'),'utf8');assert(officialConfig.includes('requires_openai_auth = true'));assert(!officialConfig.includes('base_url'));assert(!officialConfig.includes('experimental_bearer_token'));
  for(const account of ['first','second']){
   const credential=JSON.stringify({OPENAI_API_KEY:'sk-synthetic-'+account});await writeFile(path.join(home,'auth.json'),credential);
   server=await new Server().init();const visible=await server.request('thread/list',{modelProviders:['custom'],limit:100});assert(visible.data.some(t=>t.id===id));const detail=await server.request('thread/read',{threadId:id,includeTurns:true});assert(JSON.stringify(detail).includes('Synthetic message after history sync'));await server.close();server=null;
   assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),credential);
  }
- facts.passed=['official alias preserves visible local history across credential changes','native image_gen.imagegen advertised','default preserves model/catalog/auth','enhance idempotent','native model/list gpt-6-astra','real thread written by app-server','legacy provider sync preserves content','native list/read/resume after sync','new message retained by undo','custom image header reaches local mock'];facts.requestTools=requests.filter(x=>x.url.endsWith('/responses')).map(x=>(x.body.tools??[]).map(t=>t.name??t.type));facts.status='passed';
+ assert.equal(requests.filter(x=>x.url.endsWith('/responses')).at(-1).headers.authorization,'Bearer sk-isolated-test-only');
+ facts.passed=['one-click API config deletes auth and automatically syncs legacy history','account/read confirms no official login required after auth deletion','one-click official switch automatically syncs history','official alias preserves visible local history across credential changes','native image_gen.imagegen advertised','internal image-only operation preserves model/catalog/auth','enhance idempotent','native model/list gpt-6-astra','real thread written by app-server','legacy provider sync preserves content','native list/read/resume after sync','new message retained by undo','custom image header reaches local mock'];facts.requestTools=requests.filter(x=>x.url.endsWith('/responses')).map(x=>(x.body.tools??[]).map(t=>t.name??t.type));facts.status='passed';
  await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr,notifications:server?.notifications,requests},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}

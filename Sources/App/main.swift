@@ -5,58 +5,164 @@ final class Controller: ObservableObject {
     @Published var key = ""
     @Published var reveal = false
     @Published var busy = false
-    @Published var message = "准备就绪。默认启用生图不会改写模型目录或清理登录。"
+    @Published var failed = false
+    @Published var message = "准备就绪。填写 API Key，或选择切回官方设置。"
     @Published var mode = ""
     let service = PlatformService()
+
     init() { mode = service.mode() }
+
     func execute(_ operation: Operation) {
         guard !busy else { return }
-        if operation == .sync || operation == .undo || operation == .cleanup {
-            let dialog = NSAlert(); dialog.messageText = operation == .sync ? "同步全部本地历史" : operation == .undo ? "撤销上次同步" : "清理旧登录"
-            dialog.informativeText = operation == .sync ? "先自动备份，再统一本机已有会话的分类；不改变登录和消息内容。\n\n若使用 CCS 切换官方，请同时开启 CCS 的“统一 Codex 会话历史”。" : operation == .undo ? "按上次备份还原会话归属。保留同步后新增的消息和会话；已被其他工具改过的连接配置不覆盖。" : "仅用于易来连接的旧登录干扰。旧登录和本工具旧备份会移入废纸篓，旧固定模型目录会解除引用。"
-            dialog.addButton(withTitle: "取消"); dialog.addButton(withTitle: "继续")
-            guard dialog.runModal() == .alertSecondButtonReturn else { return }
+        if operation == .configure && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            failed = true
+            message = "请先填写易来 API Key，再点击“切换到易来 API”。"
+            return
         }
-        busy = true; message = "正在处理，请勿启动 Codex 或 CCS。历史较多时请等待完成。"
+        busy = true
+        failed = false
+        message = operation == .cleanup ? "正在重置配置…" : "正在切换并同步本地历史，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<String, Error> = Result { try service.run(operation, key: token) }
             DispatchQueue.main.async { [self] in
                 busy = false
-                switch outcome { case .success(let result): message = result; if operation == .configure { key = "" }; case .failure(let error): message = error.localizedDescription }
+                switch outcome {
+                case .success(let result):
+                    message = result
+                    if operation == .configure { key = "" }
+                case .failure(let error):
+                    failed = true
+                    message = error.localizedDescription
+                }
                 mode = service.mode()
             }
         }
     }
 }
+
+private struct SwitchButtonStyle: ButtonStyle {
+    let primary: Bool
+    @Environment(\.isEnabled) private var enabled
+    private let blue = Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 16, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .foregroundStyle(primary ? Color.white : Color(red: 0.17, green: 0.21, blue: 0.29))
+            .background(primary ? blue : Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(primary ? Color.clear : Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
+            .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.55)
+    }
+}
+
 struct Content: View {
     @ObservedObject var model: Controller
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("易来 Codex 配置器").font(.system(size: 29, weight: .semibold))
-            Text("CCS 配置增强 · 本地历史统一     v3.3.0").foregroundStyle(.secondary)
-            Text("当前连接：\(model.mode)").font(.headline).padding(.vertical, 4)
-            Button { model.execute(.images) } label: {
-                Text("启用生图 · 保留现有模型和登录").font(.system(size: 18, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 48)
-            }.buttonStyle(.borderedProminent)
-            Text("易来 API Key（仅配置连接时填写；启用生图无需填写）").padding(.top, 8)
-            HStack(spacing: 12) {
-                Group { if model.reveal { TextField("", text: $model.key) } else { SecureField("", text: $model.key) } }.textFieldStyle(.roundedBorder)
-                Toggle("显示", isOn: $model.reveal).toggleStyle(.checkbox)
-                Button("配置易来连接") { model.execute(.configure) }.disabled(model.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("易来 Codex").font(.system(size: 28, weight: .semibold))
+                    Text("选择连接，继续创作。")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 7) {
+                    Circle().fill(Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)).frame(width: 6, height: 6)
+                    Text(model.mode).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color.white)
+                .clipShape(Capsule())
+                .accessibilityLabel("当前连接：\(model.mode)")
             }
-            HStack(spacing: 16) {
-                Button("同步全部本地历史") { model.execute(.sync) }.frame(maxWidth: .infinity)
-                Button("撤销上次同步") { model.execute(.undo) }.frame(maxWidth: .infinity)
-                Button("清理旧登录") { model.execute(.cleanup) }.frame(maxWidth: .infinity)
-            }.controlSize(.large).padding(.vertical, 10)
-            Text("操作前完全退出 Codex 和 CC-Switch。切回官方请使用 CCS。")
-            Text("历史同步只处理本机已有记录，自动备份；不会下载其他账号的云端历史。").font(.system(size: 13)).foregroundStyle(.secondary)
-            ScrollView { Text(model.message).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12) }
-                .frame(height: 108).background(Color.white.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 9))
+
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("易来 API Key").font(.system(size: 14, weight: .medium))
+                    HStack(spacing: 12) {
+                        Group {
+                            if model.reveal {
+                                TextField("粘贴你的 API Key", text: $model.key)
+                            } else {
+                                SecureField("粘贴你的 API Key", text: $model.key)
+                            }
+                        }
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14))
+                        .accessibilityLabel("易来 API Key")
+                        Button { model.reveal.toggle() } label: {
+                            Image(systemName: model.reveal ? "eye.slash" : "eye")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(model.reveal ? "隐藏 API Key" : "显示 API Key")
+                    }
+                    .padding(.horizontal, 13)
+                    .frame(height: 46)
+                    .background(Color(red: 0.98, green: 0.985, blue: 0.993))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
+                }
+
+                HStack(spacing: 14) {
+                    Button("切换到易来 API") { model.execute(.configure) }
+                        .buttonStyle(SwitchButtonStyle(primary: true))
+                    Button("切换回官方设置") { model.execute(.official) }
+                        .buttonStyle(SwitchButtonStyle(primary: false))
+                }
+
+                Label("API 自动启用生图 · 两种切换均同步本地历史", systemImage: "sparkles")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(24)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(red: 0.92, green: 0.93, blue: 0.96), lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 9) {
+                if model.busy {
+                    ProgressView().controlSize(.small).padding(.top, 1)
+                } else {
+                    Image(systemName: model.failed ? "exclamationmark.circle" : "checkmark.circle")
+                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                        .padding(.top, 1)
+                }
+                ScrollView {
+                    Text(model.message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 58)
+            }
+
             Spacer(minLength: 0)
+            HStack {
+                Text("操作前退出 Codex 和 CC-Switch")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("重置配置") { model.execute(.cleanup) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .help("仅在切换无效时使用。旧配置会改名保留，登录与历史不变。")
+            }
         }
-        .padding(32).frame(width: 864, height: 624).background(Color(red: 0.973, green: 0.98, blue: 0.992))
+        .padding(28)
+        .frame(width: 760, height: 520)
+        .background(Color(red: 245 / 255, green: 247 / 255, blue: 251 / 255))
         .disabled(model.busy)
         .preferredColorScheme(.light)
     }
@@ -65,8 +171,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 864, height: 624), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.0"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.title = "易来 Codex 配置器 v3.3.1"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
@@ -83,7 +189,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 if CommandLine.arguments.contains("--self-test") {
-    do { try selfTest(); print("PASS: configuration, history migration/undo, and macOS cleanup/rollback"); exit(0) }
+    do { try selfTest(); print("PASS: configuration, history migration/undo, and macOS switch/reset/rollback"); exit(0) }
     catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 }
 let application = NSApplication.shared

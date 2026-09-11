@@ -98,85 +98,6 @@ void requireAppsClosed() {
       !running,
       "请完全退出 Codex 和 CC-Switch 后再操作；关闭窗口后也请检查后台进程。");
 }
-void recycle(const fs::path &input) {
-  auto p = input.lexically_normal();
-  p.make_preferred();
-  Microsoft::WRL::ComPtr<IFileOperation> op;
-  Microsoft::WRL::ComPtr<IShellItem> item;
-  ensure(SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr,
-                                    CLSCTX_INPROC_SERVER,
-                                    IID_PPV_ARGS(op.GetAddressOf()))),
-         "Cannot initialize Recycle Bin");
-  auto check = [&](HRESULT code, const char *step) {
-    if (FAILED(code))
-      throw std::runtime_error(
-          std::string("Recycle Bin ") + step + " failed (" +
-          std::to_string(static_cast<unsigned long>(code)) +
-          "): " + utf8(p.wstring()));
-  };
-  check(op->SetOperationFlags(FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE |
-                              FOF_NO_UI),
-        "flags");
-  check(SHCreateItemFromParsingName(p.c_str(), nullptr,
-                                    IID_PPV_ARGS(item.GetAddressOf())),
-        "item");
-  check(op->DeleteItem(item.Get(), nullptr), "queue");
-  check(op->PerformOperations(), "perform");
-  BOOL aborted = FALSE;
-  check(op->GetAnyOperationsAborted(&aborted), "result");
-  ensure(!aborted && !fs::exists(p), "Recycle operation was not completed");
-}
-void apply(const fs::path &root, const std::string &before,
-           const std::string &after, bool cleanup) {
-  auto config = root / L"config.toml";
-  ensure((fs::exists(config) ? read(config) : "") == before,
-         "Configuration changed; retry after closing other tools");
-  if (!cleanup) {
-    atomic(config, after);
-    return;
-  }
-  struct Snapshot {
-    fs::path path;
-    bool existed;
-    std::string bytes;
-  };
-  std::vector<Snapshot> snapshots;
-  for (const auto &target : std::vector<fs::path>{
-           config, root / L"auth.json", root / L"auth.json.yilai-disabled",
-           root / L"yilai-switcher-backup/manifest.json",
-           root / L"yilai-switcher-backup/config.toml"}) {
-    regular(target);
-    bool exists = fs::exists(target);
-    snapshots.push_back({target, exists, exists ? read(target) : ""});
-  }
-  std::vector<size_t> changed;
-  try {
-    atomic(config, after);
-    changed.push_back(0);
-    for (size_t i = 1; i < snapshots.size(); ++i)
-      if (snapshots[i].existed) {
-        recycle(snapshots[i].path);
-        changed.push_back(i);
-      }
-    ensure(!fs::exists(root / L"auth.json") &&
-               !fs::exists(root / L"auth.json.yilai-disabled"),
-           "Authentication file was recreated during cleanup");
-  } catch (...) {
-    bool restored = true;
-    for (auto it = changed.rbegin(); it != changed.rend(); ++it)
-      try {
-        const auto &snapshot = snapshots[*it];
-        if (snapshot.existed)
-          atomic(snapshot.path, snapshot.bytes);
-        else
-          fs::remove(snapshot.path);
-      } catch (...) {
-        restored = false;
-      }
-    ensure(restored, "Cleanup rollback incomplete; keep Recycle Bin backups");
-    throw;
-  }
-}
 using Buffer = std::unique_ptr<char, decltype(&yilai_config_free)>;
 } // namespace
 fs::path home() {
@@ -215,11 +136,20 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
                  bool closed) {
   if (closed)
     requireAppsClosed();
-  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-  ensure(SUCCEEDED(com), "COM initialization failed");
-  struct Scope {
-    ~Scope() { CoUninitialize(); }
-  } scope;
+  const auto config = root / L"config.toml";
+  if (action == Action::Cleanup) {
+    regular(config);
+    if (!fs::exists(config))
+      return L"没有需要重置的配置。填写 API Key 后即可切换。";
+    auto disabled = config;
+    disabled += L".disabled-" +
+                std::to_wstring(std::chrono::high_resolution_clock::now()
+                                    .time_since_epoch()
+                                    .count());
+    ensure(MoveFileW(config.c_str(), disabled.c_str()) != FALSE,
+           "无法停用旧配置，请关闭 Codex 和 CC-Switch 后重试。");
+    return L"旧配置已停用。填写 API Key 后可重新切换。";
+  }
   if (action == Action::Sync || action == Action::Undo) {
     char *error = nullptr;
     Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(),
@@ -228,30 +158,22 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     Buffer detail(error, yilai_config_free);
     ensure(result != nullptr,
            detail ? detail.get() : "History operation failed");
-    auto report = nlohmann::json::parse(result.get());
-    std::wstring message =
-        action == Action::Undo ? L"已撤销上次同步：" : L"已同步本地历史：";
-    message += std::to_wstring(report["files"].get<size_t>()) +
-               L" 个会话文件，" +
-               std::to_wstring(report["rows"].get<size_t>()) + L" 条索引。";
-    if (!report["backup"].get<std::string>().empty())
-      message += L"\r\n备份：" + wide(report["backup"]);
-    return message;
+    return action == Action::Sync ? L"本地历史已同步。" : L"已撤销历史同步。";
   }
-  const auto config = root / L"config.toml";
   regular(config);
-  const auto before = fs::exists(config) ? read(config) : "";
+  const bool hadConfig = fs::exists(config);
+  const auto before = hadConfig ? read(config) : "";
   ensure(before.find('\0') == std::string::npos,
          "Configuration contains NUL bytes");
   std::wstring key = input;
-  auto begin = key.find_first_not_of(L" \t\r\n");
-  key = begin == std::wstring::npos
+  auto start = key.find_first_not_of(L" \t\r\n");
+  key = start == std::wstring::npos
             ? L""
-            : key.substr(begin, key.find_last_not_of(L" \t\r\n") - begin + 1);
+            : key.substr(start, key.find_last_not_of(L" \t\r\n") - start + 1);
   ensure(key.find(L'\0') == std::wstring::npos, "API key contains NUL bytes");
-  int operation = action == Action::Images      ? YILAI_ENHANCE
-                  : action == Action::Configure ? YILAI_CONFIGURE
-                                                : YILAI_CLEANUP;
+  const int operation = action == Action::Images     ? YILAI_ENHANCE
+                        : action == Action::Official ? YILAI_OFFICIAL
+                                                     : YILAI_CONFIGURE;
   char *error = nullptr;
   Buffer result(
       yilai_apply_config(before.c_str(), utf8(key).c_str(), operation, &error),
@@ -259,12 +181,59 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
   Buffer detail(error, yilai_config_free);
   ensure(result != nullptr,
          detail ? detail.get() : "Configuration update failed");
-  apply(root, before, result.get(), action == Action::Cleanup);
-  return action == Action::Images
-             ? L"生图已启用；模型、目录和登录保持不变。请重开 Codex。"
-         : action == Action::Configure
-             ? L"易来连接已配置；保留现有模型和登录。请重开 Codex。"
-             : L"旧登录已移入回收站；已解除本工具旧模型目录引用。";
+  const std::string after(result.get());
+  ensure((fs::exists(config) ? read(config) : "") == before,
+         "配置已被其他程序改动，请关闭后重试。");
+  if (action == Action::Images) {
+    atomic(config, after);
+    return L"生图已启用。";
+  }
+  const auto authPath = root / L"auth.json";
+  regular(authPath);
+  const bool hadAuth = fs::exists(authPath);
+  const auto authBefore = hadAuth ? read(authPath) : "";
+  bool wroteConfig = false, removedAuth = false;
+  try {
+    atomic(config, after);
+    wroteConfig = true;
+    if (hadAuth) {
+      ensure(fs::remove(authPath),
+             "无法删除登录文件，请完全退出 Codex 后重试。");
+      removedAuth = true;
+    }
+    ensure(!fs::exists(authPath),
+           "登录文件被重新创建，请完全退出 Codex 和 CC-Switch。");
+    char *syncError = nullptr;
+    Buffer synced(
+        yilai_sync_history(utf8(root.wstring()).c_str(), 0, &syncError),
+        yilai_config_free);
+    Buffer syncDetail(syncError, yilai_config_free);
+    ensure(synced != nullptr,
+           syncDetail ? syncDetail.get() : "History synchronization failed");
+  } catch (...) {
+    bool restored = true;
+    try {
+      if (wroteConfig) {
+        if (hadConfig)
+          atomic(config, before);
+        else
+          fs::remove(config);
+      }
+    } catch (...) {
+      restored = false;
+    }
+    try {
+      if (removedAuth)
+        atomic(authPath, authBefore);
+    } catch (...) {
+      restored = false;
+    }
+    ensure(restored, "切换未完成且回滚不完整，请保留历史备份并联系支持。");
+    throw;
+  }
+  return action == Action::Official
+             ? L"已切回官方，本地历史已同步。重开 Codex 后登录即可。"
+             : L"已切换到易来 API，生图和本地历史已就绪。请重开 Codex。";
 }
 bool selfTest(std::wstring &error) {
   try {
@@ -274,9 +243,10 @@ bool selfTest(std::wstring &error) {
       Buffer message(detail, yilai_config_free);
       ensure(ok != 0, message ? message.get() : "Shared self-test failed");
     }
-    auto parent = fs::absolute(fs::temp_directory_path()).lexically_normal();
-    auto root =
-        parent / (L"YilaiCodexSwitcher-cpp-" +
+    const auto parent =
+        fs::absolute(fs::temp_directory_path()).lexically_normal();
+    const auto root =
+        parent / (L"YilaiSwitcher-v331-" +
                   std::to_wstring(std::chrono::high_resolution_clock::now()
                                       .time_since_epoch()
                                       .count()));
@@ -289,58 +259,83 @@ bool selfTest(std::wstring &error) {
         fs::remove_all(p, ignored);
       }
     } cleanup{root};
+    wchar_t *previousEnv = nullptr;
+    size_t envLength = 0;
+    _wdupenv_s(&previousEnv, &envLength, L"CODEX_SQLITE_HOME");
+    const bool hadSqliteEnv = previousEnv != nullptr;
+    const std::wstring previousSqlite = previousEnv ? previousEnv : L"";
+    free(previousEnv);
+    _wputenv_s(L"CODEX_SQLITE_HOME", root.c_str());
+    struct RestoreEnv {
+      bool had;
+      std::wstring value;
+      ~RestoreEnv() {
+        _wputenv_s(L"CODEX_SQLITE_HOME", had ? value.c_str() : L"");
+      }
+    } restoreEnv{hadSqliteEnv, previousSqlite};
     const std::string config =
         "model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json='cc-"
         "switch-model-catalog.json'\n[model_providers.custom]\nname='Other'"
-        "\nbase_url='https://"
-        "other.invalid'\nwire_api='responses'\n[model_providers.custom.http_"
-        "headers]\nX-Keep='yes'\n";
+        "\nbase_url='https://other.invalid'\nwire_api='responses'\n";
     const std::string auth = "{\"auth_mode\":\"chatgpt\"}";
     atomic(root / L"config.toml", config);
     atomic(root / L"auth.json", auth);
-    atomic(root / L"auth.json.yilai-disabled", auth);
-    atomic(root / L"yilai-switcher-backup/manifest.json", "synthetic manifest");
-    atomic(root / L"yilai-switcher-backup/config.toml", "synthetic config");
-    ensure(mode(root) == L"其他 CCS / 第三方连接",
-           "Custom falsely identified as Yilai");
-    run(Action::Images, root, L"", false);
-    ensure(read(root / L"auth.json") == auth, "Default operation changed auth");
-    auto once = read(root / L"config.toml");
-    run(Action::Images, root, L"", false);
-    ensure(read(root / L"config.toml") == once, "Enhancement not idempotent");
-    run(Action::Configure, root, L"sk-test-key", false);
-    ensure(mode(root) == L"易来 API" && read(root / L"auth.json") == auth,
-           "Explicit configure changed credentials");
-    auto before = read(root / L"config.toml");
-    HANDLE locked =
-        CreateFileW((root / L"auth.json.yilai-disabled").c_str(), GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL, nullptr);
-    ensure(locked != INVALID_HANDLE_VALUE, "Cannot lock synthetic file");
+    HANDLE locked = CreateFileW((root / L"auth.json").c_str(), GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ensure(locked != INVALID_HANDLE_VALUE, "Cannot lock test auth");
     bool failed = false;
     try {
-      run(Action::Cleanup, root, L"", false);
+      run(Action::Configure, root, L"sk-test", false);
     } catch (...) {
       failed = true;
     }
     CloseHandle(locked);
-    ensure(failed && read(root / L"config.toml") == before &&
+    ensure(failed && read(root / L"config.toml") == config &&
                read(root / L"auth.json") == auth,
-           "Cleanup rollback failed");
-    run(Action::Cleanup, root, L"", false);
-    ensure(!fs::exists(root / L"auth.json") &&
-               !fs::exists(root / L"auth.json.yilai-disabled"),
-           "Cleanup incomplete");
-    atomic(root / L"config.toml", "model='gpt-6-astra'\n");
-    atomic(root / L"auth.json", auth);
+           "Auth deletion failure did not roll back configuration");
+    atomic(root / L"sessions/bad.jsonl", "invalid history\n");
     failed = false;
     try {
-      run(Action::Cleanup, root, L"", false);
+      run(Action::Configure, root, L"sk-test", false);
     } catch (...) {
       failed = true;
     }
-    ensure(failed && read(root / L"auth.json") == auth,
-           "Official credentials not protected");
+    ensure(failed && read(root / L"config.toml") == config &&
+               read(root / L"auth.json") == auth,
+           "History failure did not restore auth/config");
+    fs::remove(root / L"sessions/bad.jsonl");
+    atomic(root / L"sessions/example.jsonl",
+           "{\"type\":\"session_meta\",\"payload\":{\"id\":\"example\",\"model_"
+           "provider\":\"openai\"}}\n{\"type\":\"event_msg\",\"payload\":{"
+           "\"message\":\"keep\"}}\n");
+    run(Action::Configure, root, L"sk-test", false);
+    ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"),
+           "API switch did not remove auth");
+    ensure(read(root / L"sessions/example.jsonl").find("custom") !=
+               std::string::npos,
+           "Switch did not synchronize history");
+    atomic(root / L"auth.json", auth);
+    run(Action::Official, root, L"", false);
+    ensure(mode(root) == L"OpenAI 官方" && !fs::exists(root / L"auth.json"),
+           "Official switch failed");
+    const std::string broken = "invalid=[configuration";
+    atomic(root / L"config.toml", broken);
+    atomic(root / L"auth.json", auth);
+    const auto historyBefore = read(root / L"sessions/example.jsonl");
+    run(Action::Cleanup, root, L"", false);
+    ensure(!fs::exists(root / L"config.toml") &&
+               read(root / L"auth.json") == auth &&
+               read(root / L"sessions/example.jsonl") == historyBefore,
+           "Reset changed auth or history");
+    size_t preserved = 0;
+    for (const auto &item : fs::directory_iterator(root))
+      if (item.path().filename().wstring().rfind(L"config.toml.disabled-", 0) ==
+              0 &&
+          read(item.path()) == broken)
+        ++preserved;
+    ensure(preserved == 1, "Reset did not preserve configuration bytes");
+    run(Action::Cleanup, root, L"", false);
     return true;
   } catch (const std::exception &e) {
     error = wide(e.what());
