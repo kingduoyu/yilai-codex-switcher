@@ -2,7 +2,7 @@
 #include <iostream>
 #include <windows.h>
 int wmain(int argc, wchar_t **argv) {
-  if (argc != 3)
+  if (argc != 3 && argc != 4)
     return 2;
   try {
     std::wstring name(argv[1]);
@@ -13,7 +13,7 @@ int wmain(int argc, wchar_t **argv) {
                   : name == L"undo"      ? app::Action::Undo
                                          : app::Action::Cleanup;
     app::run(action, std::filesystem::absolute(argv[2]),
-             L"sk-isolated-test-only", false);
+             L"sk-isolated-test-only", false, argc == 4 ? std::filesystem::path(argv[3]) : std::filesystem::path{});
     return 0;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

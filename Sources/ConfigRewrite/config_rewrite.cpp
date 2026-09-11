@@ -87,6 +87,71 @@ void clear_active_connection_constraints(toml::table &root) {
             "openai_base_url", "chatgpt_base_url"})
         scope->erase(field);
 }
+toml::table clear_connection_overrides(const char *text) {
+  auto root = toml::parse(text);
+  toml::table *profile = nullptr;
+  if (root.contains("profile")) {
+    auto name = root["profile"].value<std::string>();
+    if (!name)
+      throw std::runtime_error("The selected profile must be a string.");
+    // A layered file may select a profile declared in another file. Only
+    // rewrite the selected profile when its table is present in this input.
+    auto *profiles = root["profiles"].as_table();
+    profile = profiles ? (*profiles)[*name].as_table() : nullptr;
+  }
+  auto *providers = root["model_providers"].as_table();
+  auto *previous = providers ? (*providers)["custom"].as_table() : nullptr;
+  auto *profiles = root["profiles"].as_table();
+  bool has_inactive_reference = false;
+  if (previous && profiles)
+    for (auto &[name, node] : *profiles) {
+      auto *other = node.as_table();
+      if (other && other != profile && (*other)["model_provider"] == "custom")
+        has_inactive_reference = true;
+    }
+  if (has_inactive_reference) {
+    std::string saved = "yilai-sync-previous-custom";
+    for (int suffix = 2;; ++suffix) {
+      bool occupied = providers->contains(saved);
+      for (auto &[name, node] : *profiles) {
+        auto *other = node.as_table();
+        auto *local = other ? (*other)["model_providers"].as_table() : nullptr;
+        if (local && local->contains(saved))
+          occupied = true;
+      }
+      if (!occupied)
+        break;
+      saved = "yilai-sync-previous-custom-" + std::to_string(suffix);
+    }
+    providers->insert_or_assign(saved, *previous);
+    for (auto &[name, node] : *profiles) {
+      auto *other = node.as_table();
+      if (!other || other == profile || (*other)["model_provider"] != "custom")
+        continue;
+      other->insert_or_assign("model_provider", saved);
+      // Preserve any inline override of the old root provider under its alias.
+      if (auto *local = (*other)["model_providers"].as_table())
+        if (auto *custom = (*local)["custom"].as_table())
+          local->insert_or_assign(saved, *custom);
+    }
+  }
+  for (auto *scope : {&root, profile}) {
+    if (!scope)
+      continue;
+    for (const char *field :
+         {"model_provider", "forced_login_method", "forced_chatgpt_workspace_id",
+          "openai_base_url", "chatgpt_base_url"})
+      scope->erase(field);
+    if (auto *features = (*scope)["features"].as_table()) {
+      const auto removed = features->erase("image_generation");
+      if (removed && features->empty())
+        scope->erase("features");
+    }
+    if (auto *providers = (*scope)["model_providers"].as_table())
+      providers->erase("custom");
+  }
+  return root;
+}
 void install_custom(toml::table &root, toml::table provider) {
   auto *profile = active_profile(root);
   const auto previous_root =
@@ -559,6 +624,148 @@ model='unchanged'
     }
     check(rejected, "Invalid configuration accepted.");
   }
+  const char *override_input = R"toml(
+profile = "work"
+model = "gpt-6-astra"
+model_catalog_json = "ccs-models.json"
+model_provider = "custom"
+forced_login_method = "chatgpt"
+forced_chatgpt_workspace_id = "workspace"
+openai_base_url = "https://old.invalid"
+chatgpt_base_url = "https://old.invalid/chat"
+approval_policy = "never"
+[features]
+image_generation = false
+multi_agent = true
+[model_providers.custom]
+base_url = "https://old.invalid"
+env_key = "STALE_TOKEN"
+[model_providers.custom.http_headers]
+Authorization = "synthetic-old-token"
+[model_providers.spare]
+base_url = "https://spare.invalid"
+[profiles.work]
+model = "gpt-6-astra"
+model_catalog_json = "work-models.json"
+model_provider = "custom"
+forced_login_method = "api"
+forced_chatgpt_workspace_id = "work-space"
+openai_base_url = "https://work.invalid"
+chatgpt_base_url = "https://work.invalid/chat"
+[profiles.work.features]
+image_generation = false
+[profiles.work.model_providers.custom]
+env_key = "WORK_STALE_TOKEN"
+[profiles.work.model_providers.spare]
+base_url = "https://work-spare.invalid"
+[profiles.personal]
+model_provider = "custom"
+forced_login_method = "chatgpt"
+[profiles.personal.features]
+image_generation = false
+[profiles.personal.model_providers.custom]
+base_url = "https://personal.invalid"
+[mcp_servers.keep]
+command = "keep-command"
+[projects."C:/keep-project"]
+trust_level = "trusted"
+)toml";
+  const char *override_expected = R"toml(
+profile = "work"
+model = "gpt-6-astra"
+model_catalog_json = "ccs-models.json"
+approval_policy = "never"
+[features]
+multi_agent = true
+[model_providers.spare]
+base_url = "https://spare.invalid"
+[model_providers.yilai-sync-previous-custom]
+base_url = "https://old.invalid"
+env_key = "STALE_TOKEN"
+[model_providers.yilai-sync-previous-custom.http_headers]
+Authorization = "synthetic-old-token"
+[profiles.work]
+model = "gpt-6-astra"
+model_catalog_json = "work-models.json"
+[profiles.work.model_providers.spare]
+base_url = "https://work-spare.invalid"
+[profiles.personal]
+model_provider = "yilai-sync-previous-custom"
+forced_login_method = "chatgpt"
+[profiles.personal.features]
+image_generation = false
+[profiles.personal.model_providers.custom]
+base_url = "https://personal.invalid"
+[profiles.personal.model_providers.yilai-sync-previous-custom]
+base_url = "https://personal.invalid"
+[mcp_servers.keep]
+command = "keep-command"
+[projects."C:/keep-project"]
+trust_level = "trusted"
+)toml";
+  char *override_error = nullptr;
+  auto *override_result =
+      yilai_clear_connection_overrides(override_input, &override_error);
+  check(override_result && !override_error, "Override rewrite C API failed.");
+  auto cleared_override = toml::parse(override_result);
+  yilai_config_free(override_result);
+  check(cleared_override == toml::parse(override_expected),
+        "Override cleanup left connection fields or changed unrelated settings.");
+  check(clear_connection_overrides(format(cleared_override).c_str()) ==
+            cleared_override,
+        "Override cleanup is not idempotent.");
+  auto cross_layer_profile = clear_connection_overrides(
+      "profile = 'defined-elsewhere'\nmodel_provider = 'custom'\n"
+      "[features]\nimage_generation = false\n");
+  check(cross_layer_profile == toml::parse("profile = 'defined-elsewhere'\n"),
+        "An externally declared profile prevented clearing this layer.");
+  check(clear_connection_overrides("").empty(),
+        "Empty override cleanup created unrelated settings.");
+  const char *unchanged_override =
+      "# Preserve comments and original ordering\r\n"
+      "model = 'gpt-6-astra'\r\n\r\n"
+      "[features] # Empty table is unrelated\r\n"
+      "[mcp_servers.keep]\r\ncommand = 'keep'\r\n";
+  override_result = yilai_clear_connection_overrides(unchanged_override, &override_error);
+  check(override_result && !override_error &&
+            std::string(override_result) == unchanged_override,
+        "An unchanged override was unnecessarily reformatted.");
+  yilai_config_free(override_result);
+  auto unshared_override = clear_connection_overrides(
+      "model_provider = 'custom'\n[model_providers.custom]\n"
+      "base_url = 'https://unused.invalid'\n");
+  check(unshared_override["model_providers"].as_table()->empty(),
+        "An unreferenced override provider was unnecessarily archived.");
+  auto colliding_override = toml::parse(override_input);
+  table_at(colliding_override, "model_providers")
+      .insert_or_assign("yilai-sync-previous-custom",
+                        toml::table{{"name", "Keep root archive"}});
+  table_at(table_at(table_at(colliding_override, "profiles"), "personal"),
+           "model_providers")
+      .insert_or_assign("yilai-sync-previous-custom-2",
+                        toml::table{{"name", "Keep inline archive"}});
+  auto preserved_collision =
+      clear_connection_overrides(format(colliding_override).c_str());
+  check(preserved_collision["profiles"]["personal"]["model_provider"] ==
+            "yilai-sync-previous-custom-3" &&
+            preserved_collision["model_providers"]["yilai-sync-previous-custom"] ==
+                colliding_override["model_providers"]["yilai-sync-previous-custom"] &&
+            preserved_collision["profiles"]["personal"]["model_providers"]
+                               ["yilai-sync-previous-custom-2"] ==
+                colliding_override["profiles"]["personal"]["model_providers"]
+                                  ["yilai-sync-previous-custom-2"],
+        "Archiving a shared override overwrote an existing provider.");
+  for (const char *invalid : {static_cast<const char *>(nullptr),
+                              "token = 'private-parser-sentinel' invalid",
+                              "profile = 1"}) {
+    override_result = yilai_clear_connection_overrides(invalid, &override_error);
+    check(!override_result && override_error &&
+              std::string(override_error).find("private-parser-sentinel") ==
+                  std::string::npos,
+          "Override cleanup accepted invalid input or leaked parser source.");
+    yilai_config_free(override_error);
+    override_error = nullptr;
+  }
   auto escaped = rewrite("", "key-\"quoted\\value", YILAI_CONFIGURE);
   check(toml::parse(format(escaped)) == escaped,
         "Escaped credentials changed.");
@@ -588,6 +795,34 @@ extern "C" char *yilai_apply_config(const char *text, const char *key,
   } catch (...) {
     if (error)
       *error = copy_string("Unable to update configuration.");
+  }
+  return nullptr;
+}
+extern "C" char *yilai_clear_connection_overrides(const char *text, char **error) {
+  if (error)
+    *error = nullptr;
+  try {
+    if (!text)
+      throw std::runtime_error("Missing configuration input.");
+    const auto original = toml::parse(text);
+    const auto cleared = clear_connection_overrides(text);
+    auto *result = copy_string(cleared == original ? std::string(text) : format(cleared));
+    if (!result)
+      throw std::runtime_error("Out of memory.");
+    return result;
+  } catch (const toml::parse_error &failure) {
+    if (error)
+      *error = copy_string("Invalid TOML at line " +
+                           std::to_string(failure.source().begin.line) +
+                           ", column " +
+                           std::to_string(failure.source().begin.column) +
+                           ". Original files were not changed.");
+  } catch (const std::exception &failure) {
+    if (error)
+      *error = copy_string(failure.what());
+  } catch (...) {
+    if (error)
+      *error = copy_string("Unable to clear connection overrides.");
   }
   return nullptr;
 }

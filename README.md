@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.2
+# 易来 Codex 配置器 v3.3.3
 
 Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 Codex 即可。
 
@@ -19,6 +19,10 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 ## 切换行为
 
 - 易来使用 CCS 兼容的 custom provider，在供应商节点写入 API Key，设置 requires_openai_auth=false，并启用生图。
+- 两个主切换在写配置前调用已安装 Codex 的 config/read，读取实际加载层及字段来源；默认检查当前用户目录，以及桌面记录的 active-workspace-roots 中可访问的本机活动项目。
+- 对用户配置之上、已加载的项目/profile文件，先备份，再移除连接选择、连接覆盖和生图开关；保留模型、目录、MCP、权限及未使用的其他配置。存在但未受信任的项目层不修改，不扫描未加载的 profile 文件。
+- 写入新连接后再次读取实际结果，核验 provider、地址、认证及 API 生图配置；核验失败不进入历史同步，恢复本次配置/auth/来源改动。源码层备份位于 CODEX_HOME/yilai-source-backups，已知中断记录下次切换自动处理。
+- 核验针对本机默认启动及当前活动项目；独立 CLI 的 --profile/-c、未来新项目或之后更改的启动参数不在已验证范围。当前运行时 app-server 不能选择 CLI 独立 profile；不会以扫描文件代替实际加载结果。不可识别来源、不可访问的活动项目或不可修改的覆盖会明确报错，不宣称永远最高优先级。
 - 两个切换按钮都会删除当前 CODEX_HOME/auth.json，再自动同步已有本地历史。默认使用当前用户 .codex；设置 CODEX_HOME 时跟随它。
 - 采用 CCS v3.20.2 关闭保留官方登录的认证方式：独立 bearer token + 关闭官方认证 + 删除登录文件。不会写空 auth 对象、不会锁文件、不扫描旧登录档案，也不清理系统钥匙串或 Windows 凭据管理器。
 - 切换保留模型和 CCS 模型目录，移除当前连接的强制登录/地址覆盖。官方使用原生认证，不保留第三方 token/地址/生图占位请求头。TOML 会规范化，原注释不保留。
@@ -37,7 +41,7 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 
 ## 验证与开发
 
-配置规则：Sources/ConfigRewrite。历史核心：Sources/HistorySync。完整操作互斥：Sources/OperationGuard。Windows 界面与文件操作：Windows。macOS：Sources/App。
+配置规则：Sources/ConfigRewrite。生效来源识别、事务和运行时探测：Sources/ConfigSources。历史核心：Sources/HistorySync。完整操作互斥：Sources/OperationGuard。Windows 界面与文件操作：Windows。macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，然后运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py 验证真实失败后的日志按钮状态。
 
@@ -45,4 +49,6 @@ macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；正式通用版由 Build m
 
 真实运行时验证：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。需要 Node.js、Python 和 LLVM-MinGW。测试使用独立数据目录与本机模拟 Responses 服务，验证 auth 删除后无需官方登录、API Key 实际请求认证、内置生图工具、自动同步与继续对话；不调用付费模型。
 
-版本事实见 releases/v3.3.2/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.3/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
+
+新增来源集成验证：python Tests/source-integration.py dist/test-driver.exe <codex.exe绝对路径>。使用合成受信/未受信项目、嵌套覆盖与故障历史，不调用付费模型。

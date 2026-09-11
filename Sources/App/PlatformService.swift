@@ -4,6 +4,7 @@ import ConfigRewrite
 import HistorySync
 import Diagnostics
 import OperationGuard
+import ConfigSources
 
 enum Operation: String, CaseIterable { case images, configure, official, sync, undo, cleanup }
 struct AppError: LocalizedError {
@@ -40,6 +41,9 @@ private final class DiagnosticLog {
         case "acquire_lock": lastMainStage = "检查配置目录占用"
         case "recover_history": lastMainStage = "恢复未完成的历史同步"
         case "checking_apps": lastMainStage = "检查后台程序"
+        case "prepare_sources": lastMainStage = "识别配置来源"
+        case "apply_sources": lastMainStage = "处理连接覆盖配置"
+        case "verify_sources": lastMainStage = "核验实际生效连接"
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
         case "delete_auth": lastMainStage = "删除旧登录文件"
@@ -205,7 +209,7 @@ final class PlatformService {
         return "\(title)：\(report?["files"] as? Int ?? 0) 个会话文件，\(report?["rows"] as? Int ?? 0) 条索引。"
     }
 
-    func run(_ operation: Operation, key: String = "", requireClosed: Bool = true) throws -> String {
+    func run(_ operation: Operation, key: String = "", requireClosed: Bool = true, runtimeOverride: String = "") throws -> String {
         let log = DiagnosticLog(root: root, operation: operation, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
         do {
             log.event("acquire_lock", "Acquiring exclusive operation lock for this Codex home")
@@ -216,7 +220,7 @@ final class PlatformService {
                 throw AppError(message: lockError.map { String(cString: $0) } ?? "另一个配置器正在操作此目录，请稍后重试。")
             }
             defer { yilai_operation_unlock(lock) }
-            let result = try runOperation(operation, key: key, requireClosed: requireClosed, log: log)
+            let result = try runOperation(operation, key: key, requireClosed: requireClosed, runtimeOverride: runtimeOverride, log: log)
             log.finish(success: true, message: "Operation completed")
             return result
         } catch {
@@ -229,7 +233,7 @@ final class PlatformService {
         }
     }
 
-    private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, log: DiagnosticLog) throws -> String {
+    private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
         if operation == .configure || operation == .official {
@@ -257,6 +261,25 @@ final class PlatformService {
         if operation == .configure && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw AppError(message: "请先填写易来 API Key，再点击“切换到易来 API”。")
         }
+        var sources: OpaquePointer?
+        defer { if let sources { yilai_sources_finish(sources) } }
+        let switching = operation == .configure || operation == .official
+        if switching && (requireClosed || !runtimeOverride.isEmpty) {
+            log.event("prepare_sources", "Reading effective configuration layers using the installed runtime")
+            var sourceError: UnsafeMutablePointer<CChar>?
+            defer { if let sourceError { yilai_config_free(sourceError) } }
+            sources = root.path.withCString { home in
+                runtimeOverride.withCString { yilai_sources_prepare(home, $0, &sourceError) }
+            }
+            guard let sources else {
+                throw AppError(message: sourceError.map { String(cString: $0) } ?? "配置来源识别失败，未继续切换。")
+            }
+            if let summary = yilai_sources_summary(sources) {
+                defer { yilai_config_free(summary) }
+                log.event("sources_plan", String(cString: summary))
+            }
+        }
+        log.event("prepare_config", "Validating root configuration update")
         let beforeConfig = try snapshot(config)
         let before: String
         if let beforeConfig {
@@ -288,14 +311,23 @@ final class PlatformService {
             throw AppError(message: failure.map { String(cString: $0) } ?? "配置更新失败")
         }
         let after = Data(String(cString: output).utf8)
-        let switching = operation == .configure || operation == .official
         let beforeAuth = switching ? try snapshot(auth) : nil
         guard try snapshot(config) == beforeConfig else {
             throw AppError(message: "配置已被其他程序改动，请关闭后重试。")
         }
         var configChanged = false
         var authRemoved = false
+        var sourcesAttempted = false
         do {
+            if let sources {
+                log.event("apply_sources", "Removing only effective connection overrides from the prepared sources")
+                var sourceError: UnsafeMutablePointer<CChar>?
+                defer { if let sourceError { yilai_config_free(sourceError) } }
+                sourcesAttempted = true
+                guard yilai_sources_apply(sources, &sourceError) != 0 else {
+                    throw AppError(message: sourceError.map { String(cString: $0) } ?? "连接覆盖配置处理失败。")
+                }
+            }
             log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
@@ -307,6 +339,17 @@ final class PlatformService {
                 if beforeAuth != nil {
                     try files.removeItem(at: auth)
                     authRemoved = true
+                }
+                if let sources {
+                    log.event("verify_sources", "Verifying the effective provider and authentication before history sync")
+                    var sourceError: UnsafeMutablePointer<CChar>?
+                    defer { if let sourceError { yilai_config_free(sourceError) } }
+                    let verified = token.withCString {
+                        yilai_sources_verify(sources, operation == .official ? 1 : 0, $0, &sourceError)
+                    }
+                    guard verified != 0 else {
+                        throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
+                    }
                 }
                 log.event("sync_history", "Synchronizing local history")
                 _ = try history()
@@ -338,6 +381,17 @@ final class PlatformService {
                 } catch {
                     failures.append("登录文件")
                     log.event("rollback_auth", "Restore failed: \(operationErrorDescription(error))")
+                }
+            }
+            if sourcesAttempted, let sources {
+                log.event("rollback_sources", "Restoring configuration sources changed by this operation")
+                var sourceError: UnsafeMutablePointer<CChar>?
+                defer { if let sourceError { yilai_config_free(sourceError) } }
+                if yilai_sources_rollback(sources, &sourceError) == 0 {
+                    failures.append("配置来源")
+                    log.event("rollback_sources", "Restore failed: \(sourceError.map { String(cString: $0) } ?? "未知错误")")
+                } else {
+                    log.event("rollback_sources", "Restored")
                 }
             }
             guard failures.isEmpty else {
@@ -435,6 +489,76 @@ func selfTest() throws {
     let enhanced = try text("config.toml")
     _ = try service.run(.images, requireClosed: false)
     try check(try text("config.toml") == enhanced, "Enhancement not idempotent")
+
+    // Exercise native POSIX spawning and the three-message handshake with a local
+    // shell stub. This validates transport, not a real macOS Codex runtime.
+    do {
+        func jsonLine(_ value: [String: Any]) throws -> String {
+            let bytes = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        func shellLiteral(_ value: String) -> String {
+            "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        let initializedReply = try jsonLine(["id": 1, "result": ["userAgent": "probe's synthetic runtime"]])
+        let configurationReply = try jsonLine([
+            "id": 2,
+            "result": [
+                "config": [String: Any](),
+                "origins": [String: Any](),
+                "layers": [[
+                    "name": ["type": "user", "file": root.appendingPathComponent("config.toml").path, "profile": NSNull()],
+                    "config": [String: Any](),
+                    "disabledReason": NSNull()
+                ]]
+            ]
+        ])
+        let probeStub = root.appendingPathComponent("runtime probe's stub")
+        defer { try? files.removeItem(at: probeStub) }
+        let script = [
+            "#!/bin/sh",
+            "IFS= read -r request || exit 10",
+            "case \"$request\" in *initialize*) ;; *) exit 11 ;; esac",
+            "printf '%s\\n' " + shellLiteral(initializedReply),
+            "IFS= read -r request || exit 12",
+            "case \"$request\" in *initialized*) ;; *) exit 13 ;; esac",
+            "IFS= read -r request || exit 14",
+            "case \"$request\" in *config/read*) ;; *) exit 15 ;; esac",
+            "printf '%s\\n' " + shellLiteral(configurationReply),
+            "exit 0"
+        ].joined(separator: "\n") + "\n"
+        try Data(script.utf8).write(to: probeStub)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: probeStub.path)
+        var lockError: UnsafeMutablePointer<CChar>?
+        let probeLock = root.path.withCString { yilai_operation_lock($0, &lockError) }
+        defer { if let lockError { yilai_config_free(lockError) } }
+        guard let probeLock else {
+            throw AppError(message: lockError.map { String(cString: $0) } ?? "Cannot lock synthetic probe home")
+        }
+        defer { yilai_operation_unlock(probeLock) }
+        var sourceError: UnsafeMutablePointer<CChar>?
+        let sourcePlan = root.path.withCString { home in
+            probeStub.path.withCString { yilai_sources_prepare(home, $0, &sourceError) }
+        }
+        defer {
+            if let sourceError { yilai_config_free(sourceError) }
+            if let sourcePlan { yilai_sources_finish(sourcePlan) }
+        }
+        guard sourcePlan != nil else {
+            throw AppError(message: sourceError.map { String(cString: $0) } ?? "POSIX runtime probe stub failed")
+        }
+        try check(try text("config.toml") == enhanced && text("auth.json") == auth, "Read-only source probing changed config/auth")
+    }
+
+    // A supplied test runtime enables source probing even with process checks skipped.
+    // Preparation failure must preserve credentials/config and release the operation.
+    var missingRuntimeError = ""
+    do {
+        _ = try service.run(.configure, key: "sk-test-key", requireClosed: false,
+                            runtimeOverride: root.appendingPathComponent("missing-codex-runtime").path)
+    } catch { missingRuntimeError = error.localizedDescription }
+    try check(missingRuntimeError.contains("识别配置来源"), "Explicit test runtime did not enable source verification")
+    try check(try text("config.toml") == enhanced && text("auth.json") == auth, "Source preparation failure changed config/auth")
 
     // An immutable auth file must fail the switch without changing config/history.
     let session = record("active", "openai")

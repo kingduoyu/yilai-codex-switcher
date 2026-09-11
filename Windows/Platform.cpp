@@ -6,6 +6,7 @@
 #include "HistorySync.h"
 #include "Diagnostics.h"
 #include "OperationGuard.h"
+#include "ConfigSources.h"
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -161,7 +162,7 @@ std::wstring mode(const fs::path &root) {
 }
 static std::wstring perform(Action action, const fs::path &root,
                             const std::wstring &input, bool closed,
-                            OperationLog &log) {
+                            OperationLog &log, const fs::path &runtimeOverride) {
   log.step("lock_operation", "检查其他配置器操作");
   char *lockError = nullptr;
   std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> operationLock(
@@ -204,6 +205,16 @@ static std::wstring perform(Action action, const fs::path &root,
     Buffer recoveryDetail(recoveryError, yilai_config_free);
     ensure(recovered != nullptr, recoveryDetail ? recoveryDetail.get() : "历史恢复失败");
   }
+  std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(nullptr, yilai_sources_finish);
+  if ((action == Action::Configure || action == Action::Official) && (closed || !runtimeOverride.empty())) {
+    log.step("inspect_sources", "识别当前生效来源");
+    char *sourceError = nullptr;
+    sources.reset(yilai_sources_prepare(utf8(root.wstring()).c_str(), utf8(runtimeOverride.wstring()).c_str(), &sourceError));
+    Buffer sourceDetail(sourceError, yilai_config_free);
+    ensure(sources != nullptr, sourceDetail ? sourceDetail.get() : "无法识别配置来源");
+    Buffer summary(yilai_sources_summary(sources.get()), yilai_config_free);
+    yilai_diagnostic_event(log.context, "source_plan", summary ? summary.get() : "来源计划已生成");
+  }
   log.step("prepare_config", "准备连接配置");
   regular(config);
   const bool hadConfig = fs::exists(config);
@@ -240,6 +251,13 @@ static std::wstring perform(Action action, const fs::path &root,
   const auto authBefore = hadAuth ? read(authPath) : "";
   bool wroteConfig = false, removedAuth = false;
   try {
+    if (sources) {
+      log.step("clear_sources", "清除旧连接覆盖");
+      char *sourceError = nullptr;
+      auto ok = yilai_sources_apply(sources.get(), &sourceError);
+      Buffer sourceDetail(sourceError, yilai_config_free);
+      ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源清理失败");
+    }
     log.step("write_config", "写入连接配置");
     ensure(fs::exists(config) == hadConfig && (hadConfig ? read(config) : "") == before,
            "配置已被其他程序改动，请关闭后重试。");
@@ -255,6 +273,13 @@ static std::wstring perform(Action action, const fs::path &root,
     }
     ensure(!fs::exists(authPath),
            "登录文件被重新创建，请完全退出 Codex 和 CC-Switch。");
+    if (sources) {
+      log.step("verify_sources", "核验新连接实际生效");
+      char *sourceError = nullptr;
+      auto ok = yilai_sources_verify(sources.get(), action == Action::Official, utf8(key).c_str(), &sourceError);
+      Buffer sourceDetail(sourceError, yilai_config_free);
+      ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源核验失败");
+    }
     log.step("sync_history", "同步本地历史");
     char *syncError = nullptr;
     Buffer synced(
@@ -295,6 +320,14 @@ static std::wstring perform(Action action, const fs::path &root,
       restored = false;
       yilai_diagnostic_event(log.context, "rollback_auth", e.what());
     }
+    if (sources) {
+      log.step("rollback_sources", "还原配置来源");
+      char *sourceError = nullptr;
+      auto ok = yilai_sources_rollback(sources.get(), &sourceError);
+      Buffer sourceDetail(sourceError, yilai_config_free);
+      if (!ok) restored = false;
+      yilai_diagnostic_event(log.context, "rollback_sources", ok ? "还原完成" : (sourceDetail ? sourceDetail.get() : "来源恢复失败"));
+    }
     log.step(failedStage.c_str(), failedLabel.c_str());
     if (!restored)
       throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
@@ -305,7 +338,7 @@ static std::wstring perform(Action action, const fs::path &root,
              : L"已切换到易来 API，生图和本地历史已就绪。请重开 Codex。";
 }
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed) {
+                 bool closed, const fs::path &runtimeOverride) {
   const char *name = action == Action::Configure  ? "switch_api"
                      : action == Action::Official ? "switch_official"
                      : action == Action::Cleanup  ? "reset_config"
@@ -315,7 +348,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   try {
-    auto result = perform(action, root, input, closed, log);
+    auto result = perform(action, root, input, closed, log, runtimeOverride);
     yilai_diagnostic_end(log.context, 1, "操作完成");
     return result;
   } catch (const std::exception &error) {
