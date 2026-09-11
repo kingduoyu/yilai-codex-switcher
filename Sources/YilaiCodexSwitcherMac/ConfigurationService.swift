@@ -273,7 +273,7 @@ func runSelfTest() throws {
   try service.switchToYilai(key: "sk-test-key")
   guard try service.mode() == .yilai else { throw SwitcherError.message("自测失败：模式识别") }
   let switched = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
-  guard switched.contains("model_provider = \\"custom\\""),
+  guard switched.contains("model_provider = \"custom\""),
     switched.contains("model = \"gpt-5.6-sol\""),
     switched.contains("model_catalog_json = "),
     try String(contentsOf: root.appendingPathComponent("yilai-model-catalog.json"), encoding: .utf8) == YilaiModelCatalog.json,
