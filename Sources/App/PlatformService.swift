@@ -3,11 +3,24 @@ import Darwin
 import ConfigRewrite
 import HistorySync
 import Diagnostics
+import OperationGuard
 
 enum Operation: String, CaseIterable { case images, configure, official, sync, undo, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+// NSError codes distinguish permission, file occupation and I/O failures without
+// serializing userInfo, which can contain file contents or credentials.
+private func operationErrorDescription(_ error: Error) -> String {
+    if let error = error as? AppError { return error.message }
+    let value = error as NSError
+    var detail = "\(value.localizedDescription) [\(value.domain):\(value.code)]"
+    if let underlying = value.userInfo[NSUnderlyingErrorKey] as? NSError {
+        detail += " [\(underlying.domain):\(underlying.code)]"
+    }
+    return detail
 }
 
 private final class DiagnosticLog {
@@ -24,6 +37,8 @@ private final class DiagnosticLog {
 
     func event(_ stage: String, _ message: String) {
         switch stage {
+        case "acquire_lock": lastMainStage = "检查配置目录占用"
+        case "recover_history": lastMainStage = "恢复未完成的历史同步"
         case "checking_apps": lastMainStage = "检查后台程序"
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
@@ -48,9 +63,11 @@ private final class DiagnosticLog {
         return String(cString: output)
     }
 
-    func finish(success: Bool, message: String) {
-        message.withCString { yilai_diagnostic_end(context, success ? 1 : 0, $0) }
+    @discardableResult
+    func finish(success: Bool, message: String) -> Bool {
+        let saved = message.withCString { yilai_diagnostic_finish(context, success ? 1 : 0, $0) } != 0
         context = nil
+        return saved
     }
 }
 
@@ -88,6 +105,9 @@ final class PlatformService {
         process.standardError = Pipe()
         try process.run()
         process.waitUntilExit()
+        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
+            throw AppError(message: "无法检查后台程序（pgrep 退出码 \(process.terminationStatus)），未做修改。")
+        }
         guard process.terminationStatus == 1 else {
             throw AppError(message: "请完全退出 Codex 和 CC-Switch 后再操作；关闭窗口后也请检查后台进程。")
         }
@@ -126,6 +146,48 @@ final class PlatformService {
         else if files.fileExists(atPath: url.path) { try regular(url); try files.removeItem(at: url) }
     }
 
+    // link(2) publishes a complete private file only if the destination is absent.
+    // A new auth file created after the caller's snapshot must never be replaced.
+    fileprivate func restoreAuthWithoutReplacing(_ data: Data) throws {
+        let temporary = root.appendingPathComponent(".yilai-auth-restore-\(UUID().uuidString)")
+        let descriptor = temporary.path.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600)) }
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer {
+            _ = Darwin.close(descriptor)
+            _ = temporary.path.withCString { Darwin.unlink($0) }
+        }
+        try data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(descriptor, base.advanced(by: offset), bytes.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                guard count > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
+                offset += count
+            }
+        }
+        guard Darwin.fsync(descriptor) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let linked = temporary.path.withCString { source in
+            auth.path.withCString { Darwin.link(source, $0) }
+        }
+        guard linked == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    }
+
+    private func recoverHistory() throws {
+        var failure: UnsafeMutablePointer<CChar>?
+        let output = root.path.withCString { yilai_recover_history($0, &failure) }
+        defer {
+            if let output { yilai_config_free(output) }
+            if let failure { yilai_config_free(failure) }
+        }
+        guard output != nil else {
+            throw AppError(message: failure.map { String(cString: $0) } ?? "恢复未完成的历史同步失败")
+        }
+    }
+
     private func history(undo: Bool = false) throws -> String {
         var failure: UnsafeMutablePointer<CChar>?
         let output = root.path.withCString { yilai_sync_history($0, undo ? 1 : 0, &failure) }
@@ -146,13 +208,23 @@ final class PlatformService {
     func run(_ operation: Operation, key: String = "", requireClosed: Bool = true) throws -> String {
         let log = DiagnosticLog(root: root, operation: operation, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
         do {
+            log.event("acquire_lock", "Acquiring exclusive operation lock for this Codex home")
+            var lockError: UnsafeMutablePointer<CChar>?
+            let lock = root.path.withCString { yilai_operation_lock($0, &lockError) }
+            defer { if let lockError { yilai_config_free(lockError) } }
+            guard let lock else {
+                throw AppError(message: lockError.map { String(cString: $0) } ?? "另一个配置器正在操作此目录，请稍后重试。")
+            }
+            defer { yilai_operation_unlock(lock) }
             let result = try runOperation(operation, key: key, requireClosed: requireClosed, log: log)
             log.finish(success: true, message: "Operation completed")
             return result
         } catch {
-            let message = log.failureMessage(error.localizedDescription)
+            var message = log.failureMessage(operationErrorDescription(error))
             log.event("failure", message)
-            log.finish(success: false, message: message)
+            if !log.finish(success: false, message: message) {
+                message += " 诊断日志未能完整保存，请复制当前错误信息。"
+            }
             throw AppError(message: message)
         }
     }
@@ -160,6 +232,11 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
+        if operation == .configure || operation == .official {
+            log.event("recover_history", "Checking and recovering any interrupted history transaction")
+            try recoverHistory()
+            log.event("recover_history", "Pending history recovery completed")
+        }
         if operation == .sync || operation == .undo {
             log.event("sync_history", operation == .undo ? "Restoring local history classification" : "Synchronizing local history")
             return try history(undo: operation == .undo)
@@ -235,30 +312,36 @@ final class PlatformService {
                 _ = try history()
             }
         } catch {
-            log.event("switch_failed", error.localizedDescription)
+            log.event("switch_failed", operationErrorDescription(error))
             var failures: [String] = []
             if configChanged {
                 log.event("rollback_config", "Restoring prior configuration")
                 do {
+                    guard try snapshot(config) == after else {
+                        throw AppError(message: "配置已被其他程序改动，未覆盖当前文件。")
+                    }
                     try restore(beforeConfig, config)
                     log.event("rollback_config", "Restored")
                 } catch {
                     failures.append("连接配置")
-                    log.event("rollback_config", "Restore failed: \(error.localizedDescription)")
+                    log.event("rollback_config", "Restore failed: \(operationErrorDescription(error))")
                 }
             }
             if authRemoved {
                 log.event("rollback_auth", "Restoring prior auth.json")
                 do {
-                    try restore(beforeAuth, auth)
+                    guard try snapshot(auth) == nil else {
+                        throw AppError(message: "登录文件已由其他程序创建，未覆盖当前文件。")
+                    }
+                    if let beforeAuth { try restoreAuthWithoutReplacing(beforeAuth) }
                     log.event("rollback_auth", "Restored")
                 } catch {
                     failures.append("登录文件")
-                    log.event("rollback_auth", "Restore failed: \(error.localizedDescription)")
+                    log.event("rollback_auth", "Restore failed: \(operationErrorDescription(error))")
                 }
             }
             guard failures.isEmpty else {
-                throw AppError(message: "切换失败，\(failures.joined(separator: "、"))未能还原：\(error.localizedDescription)")
+                throw AppError(message: "切换失败，\(failures.joined(separator: "、"))未能还原：\(operationErrorDescription(error))")
             }
             throw error
         }
@@ -317,6 +400,36 @@ func selfTest() throws {
     try put("yilai-switcher-backup/manifest.json", "keep manifest")
     let service = PlatformService(root: root)
     try check(service.mode() == "其他 CCS / 第三方连接", "False Yilai identification")
+    // Restoring auth cannot overwrite an account created by another process.
+    var existingAuthRejected = false
+    do { try service.restoreAuthWithoutReplacing(Data("replacement must not win".utf8)) }
+    catch { existingAuthRejected = true }
+    try check(try existingAuthRejected && text("auth.json") == auth, "Auth restore overwrote an existing account")
+    try files.removeItem(at: root.appendingPathComponent("auth.json"))
+    try service.restoreAuthWithoutReplacing(Data(auth.utf8))
+    try check(try text("auth.json") == auth, "Auth restore did not recreate an absent file")
+    let authPermissions = try files.attributesOfItem(atPath: root.appendingPathComponent("auth.json").path)[.posixPermissions] as? NSNumber
+    try check(authPermissions?.intValue == 0o600, "Restored auth permissions are not private")
+    let temporaryAuthFiles = try files.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".yilai-auth-restore-") }
+    try check(temporaryAuthFiles.isEmpty, "Auth restoration left a temporary credential file")
+    // Every entry point must refuse a second writer before touching config/auth.
+    do {
+        var failure: UnsafeMutablePointer<CChar>?
+        let heldLock = root.path.withCString { yilai_operation_lock($0, &failure) }
+        defer { if let failure { yilai_config_free(failure) } }
+        guard let heldLock else {
+            throw AppError(message: failure.map { String(cString: $0) } ?? "Cannot acquire synthetic operation lock")
+        }
+        defer { yilai_operation_unlock(heldLock) }
+        for operation in Operation.allCases {
+            var rejected = false
+            do { _ = try service.run(operation, key: "sk-test-key", requireClosed: false) }
+            catch { rejected = true }
+            try check(rejected, "Concurrent operation was not rejected: \(operation)")
+            try check(try text("config.toml") == config && text("auth.json") == auth, "Concurrent operation changed configuration or auth")
+        }
+    }
+    // The next operation also verifies release of the held lock.
     _ = try service.run(.images, requireClosed: false)
     try check(try text("auth.json") == auth, "Enhancement cleared auth")
     let enhanced = try text("config.toml")
@@ -366,6 +479,9 @@ func selfTest() throws {
     try put("auth.json", auth)
     let beforeReset = try text("config.toml")
     let beforeHistory = try text("sessions/active.jsonl")
+    // Even a recoverable pending transaction belongs to a main switch, not reset.
+    let pendingHistory = try text("yilai-history-backups/latest.json")
+    try put("yilai-history-backups/pending.json", pendingHistory)
     _ = try service.run(.cleanup, requireClosed: false)
     try check(!files.fileExists(atPath: root.appendingPathComponent("config.toml").path), "Reset retained active config")
     let renamed = try files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("config.toml.disabled-") }
@@ -374,6 +490,8 @@ func selfTest() throws {
     try check(try text("auth.json") == auth && text("sessions/active.jsonl") == beforeHistory, "Reset changed auth/history")
     _ = try service.run(.cleanup, requireClosed: false)
     try check(try text("auth.json") == auth, "Empty reset changed auth")
+    try check(try text("yilai-history-backups/pending.json") == pendingHistory, "Reset changed a pending history marker")
+    try files.removeItem(at: root.appendingPathComponent("yilai-history-backups/pending.json"))
 
     // Malformed input may appear in a parser error: both UI and logs must redact it.
     let malformed = "experimental_bearer_token = 'sk-test-key\n"
@@ -388,7 +506,12 @@ func selfTest() throws {
     let noLogRoot = root.appendingPathComponent("no-log", isDirectory: true)
     try files.createDirectory(at: noLogRoot, withIntermediateDirectories: true)
     try Data("occupied".utf8).write(to: noLogRoot.appendingPathComponent("yilai-switcher-logs"))
-    _ = try PlatformService(root: noLogRoot).run(.cleanup, requireClosed: false)
+    let noLogService = PlatformService(root: noLogRoot)
+    _ = try noLogService.run(.cleanup, requireClosed: false)
+    var noLogError = ""
+    do { _ = try noLogService.run(.configure, requireClosed: false) }
+    catch { noLogError = error.localizedDescription }
+    try check(noLogError.contains("诊断日志未能完整保存"), "Unavailable diagnostics were not reported on failure")
 
     let logFiles = try files.contentsOfDirectory(at: service.logsDirectory, includingPropertiesForKeys: [.isRegularFileKey])
         .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }

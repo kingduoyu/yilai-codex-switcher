@@ -244,7 +244,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     failed = !result->ok;
     statusText = result->message;
     ShowWindow(GetDlgItem(window, Logs), failed ? SW_SHOW : SW_HIDE);
-    for (int id : {Api, Official, Reset, Eye})
+    for (int id : {Api, Official, Reset, Eye, Logs})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(keyBox, TRUE);
     if (result->ok && result->operation == Api)
@@ -362,7 +362,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
   WNDCLASSW cls{};
   cls.hInstance = instance;
-  cls.lpszClassName = L"YilaiSwitcherV331";
+  cls.lpszClassName = L"YilaiSwitcherV332";
   cls.lpfnWndProc = procedure;
   cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
@@ -371,7 +371,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 520};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.1", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.2", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);

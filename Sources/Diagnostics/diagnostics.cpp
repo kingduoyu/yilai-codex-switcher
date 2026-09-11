@@ -142,7 +142,7 @@ void record(YilaiDiagnostic *context, const char *stage, const char *message,
   if (!context || !context->file)
     return;
   std::lock_guard<std::mutex> guard(context->mutex);
-  json entry{{"version", "3.3.1"},
+  json entry{{"version", "3.3.2"},
              {"platform", platform},
              {"time", timestamp()},
              {"action", sanitize(context, context->operation)},
@@ -157,6 +157,7 @@ void record(YilaiDiagnostic *context, const char *stage, const char *message,
     // Log failures must not alter the operation's actual success/failure.
     std::fclose(context->file);
     context->file = nullptr;
+    context->path.clear();
   }
 }
 FILE *create_log(const fs::path &path) {
@@ -257,7 +258,7 @@ void self_test() {
     int rows = 0;
     while (std::getline(input, line)) {
       auto entry = json::parse(line);
-      check(entry["version"] == "3.3.1" && entry["platform"] == platform &&
+      check(entry["version"] == "3.3.2" && entry["platform"] == platform &&
                 entry.contains("time") && entry["action"] == "test-operation",
             "Diagnostic fields missing.");
       check(line.find(key) == std::string::npos &&
@@ -299,7 +300,11 @@ void self_test() {
   check(!disabled || !*yilai_diagnostic_path(disabled),
         "Unavailable diagnostic location unexpectedly succeeded.");
   yilai_diagnostic_event(disabled, "step", "must not fail the operation");
-  yilai_diagnostic_end(disabled, 0, "Failed operation remains failed");
+  check(!yilai_diagnostic_available(disabled), "Unavailable log reported writable");
+  check(!yilai_diagnostic_finish(disabled, 0, "Failed operation remains failed"),
+        "Unavailable log reported saved");
+  auto *saved = yilai_diagnostic_begin(home.u8string().c_str(), "finish-test", key.c_str());
+  check(yilai_diagnostic_finish(saved, 1, "Completed") != 0, "Saved log reported unavailable");
 }
 } // namespace
 extern "C" YilaiDiagnostic *yilai_diagnostic_begin(const char *home,
@@ -339,13 +344,22 @@ extern "C" char *yilai_diagnostic_sanitize(const YilaiDiagnostic *context,
         "Operation failed. Diagnostic details could not be sanitized.");
   }
 }
-extern "C" void yilai_diagnostic_end(YilaiDiagnostic *context, int success,
-                                     const char *message) {
+extern "C" int yilai_diagnostic_available(const YilaiDiagnostic *context) {
+  return context && context->file ? 1 : 0;
+}
+extern "C" int yilai_diagnostic_finish(YilaiDiagnostic *context, int success,
+                                        const char *message) {
+  bool saved = false;
   try {
     record(context, "end", message, success ? "success" : "failure");
-  } catch (...) {
-  }
+    saved = yilai_diagnostic_available(context) != 0;
+  } catch (...) {}
   delete context;
+  return saved ? 1 : 0;
+}
+extern "C" void yilai_diagnostic_end(YilaiDiagnostic *context, int success,
+                                     const char *message) {
+  (void)yilai_diagnostic_finish(context, success, message);
 }
 extern "C" int yilai_diagnostic_self_test(char **error) {
   if (error)

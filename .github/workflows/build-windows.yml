@@ -29,6 +29,10 @@ jobs:
           $process = Start-Process -FilePath "dist/windows/YilaiCodexSwitcher.exe" -ArgumentList "--self-test" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Self-test failed with exit code $($process.ExitCode)." }
 
+      - name: Verify failure UI and log button
+        shell: pwsh
+        run: python Tests/windows-ui.py dist/windows/YilaiCodexSwitcher.exe
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:

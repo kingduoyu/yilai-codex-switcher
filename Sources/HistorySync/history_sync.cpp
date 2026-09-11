@@ -401,9 +401,9 @@ std::string normalize(const std::string &config) {
   yilai_config_free(result);
   return out;
 }
-Json operate(const fs::path &input, bool restore, int failAfter = 0) {
-  auto home = fs::weakly_canonical(fs::absolute(input)).lexically_normal();
-  Lock lock(home);
+// The caller holds the home lock, including across recovery and a new sync.
+Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
+                   bool restoreConfig = true) {
   auto configPath = home / "config.toml";
   std::string oldConfig = fs::exists(configPath) ? read(configPath) : "";
   std::string newConfig = restore ? oldConfig : normalize(oldConfig);
@@ -440,7 +440,7 @@ Json operate(const fs::path &input, bool restore, int failAfter = 0) {
     ensure(source.value("kind", std::string()) == "sync" &&
                source.value("status", std::string()) != "restored",
            "No synchronization to undo");
-    if (oldConfig == source.at("new_config"))
+    if (restoreConfig && oldConfig == source.at("new_config"))
       newConfig = source.at("old_config");
   } else if (restore)
     throw std::runtime_error("No local history synchronization backup found");
@@ -694,11 +694,184 @@ Json operate(const fs::path &input, bool restore, int failAfter = 0) {
           {"backup", utf8(backup)},
           {"restored", restore}};
 }
+// Recover only our pending transaction. Never restore an old configuration here:
+// the caller may already have prepared a new provider before invoking sync.
+Json recoverPendingLocked(const fs::path &home) {
+  const auto parent = home / "yilai-history-backups";
+  const auto pending = parent / "pending.json";
+  noLinks(parent);
+  if (!fs::exists(pending))
+    return {{"recovered", false}, {"files", 0}, {"rows", 0}};
+  const auto pointer = Json::parse(read(pending));
+  const auto generation = pointer.at("generation").get<std::string>();
+  ensure(!generation.empty() &&
+             generation.find_first_not_of("0123456789-") == std::string::npos,
+         "Invalid pending backup pointer");
+  const auto manifestPath = parent / generation / "manifest.json";
+  const auto manifest = Json::parse(read(manifestPath));
+  ensure(manifest.at("home") == utf8(home),
+         "History backup belongs to another directory");
+  ensure(manifest.value("version", 0) == 1 &&
+             manifest.value("kind", std::string()) == "sync",
+         "Invalid pending history transaction");
+  const auto status = manifest.value("status", std::string());
+  if (status == "complete" || status == "rolled_back" || status == "restored") {
+    // A completed transaction can be interrupted before latest.json is written.
+    // Finish its durable bookkeeping without reverting successful history.
+    if (status == "complete")
+      write(parent / "latest.json", pointer.dump());
+    fs::remove(pending);
+    return {{"recovered", true}, {"files", 0}, {"rows", 0}};
+  }
+  ensure(status == "prepared" || status == "recovery_required",
+         "Unknown pending history transaction status; backups left unchanged");
+  auto result = operateLocked(home, true, 0, false);
+  ensure(!fs::exists(pending),
+         "History recovered but pending marker could not be removed; retry");
+  result["recovered"] = true;
+  return result;
+}
+Json recoverPending(const fs::path &input) {
+  const auto home = fs::weakly_canonical(fs::absolute(input)).lexically_normal();
+  Lock lock(home);
+  return recoverPendingLocked(home);
+}
+Json operate(const fs::path &input, bool restore, int failAfter = 0) {
+  const auto home = fs::weakly_canonical(fs::absolute(input)).lexically_normal();
+  Lock lock(home);
+  if (!restore)
+    recoverPendingLocked(home);
+  return operateLocked(home, restore, failAfter);
+}
 char *copy(const std::string &s) {
   auto *p = static_cast<char *>(std::malloc(s.size() + 1));
   if (p)
     std::memcpy(p, s.c_str(), s.size() + 1);
   return p;
+}
+void recoverySelfTest(const fs::path &root) {
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    const auto home = root / ("recovery-" + std::to_string(scenario));
+    fs::create_directories(home);
+    const auto configPath = home / "config.toml";
+    const std::string originalConfig =
+        "model='gpt-6-astra'\nsqlite_home=" + Json(utf8(home)).dump() + "\n";
+    write(configPath, originalConfig);
+    for (const char *id : {"a", "b"}) {
+      const Json meta = {{"type", "session_meta"},
+                         {"payload", {{"id", id}, {"model_provider", "openai"}}}};
+      write(home / "sessions" / (std::string(id) + ".jsonl"), meta.dump() + "\n");
+    }
+    {
+      Db db(home / "state_5.sqlite", true);
+      db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT,title TEXT)");
+      db.exec("INSERT INTO threads VALUES('a','openai','original'),('b','openai','original')");
+    }
+    operate(home, false);
+    const auto parent = home / "yilai-history-backups";
+    const auto pointer = read(parent / "latest.json");
+    const auto manifestPath = parent /
+        Json::parse(pointer).at("generation").get<std::string>() / "manifest.json";
+    auto manifest = Json::parse(read(manifestPath));
+    // The new switch configuration must survive recovery even when it happens
+    // to match the interrupted transaction's output exactly.
+    const auto candidate = scenario == 4 ? read(configPath) :
+        originalConfig + "# candidate for the next switch\n";
+    write(configPath, candidate);
+    const auto session = home / "sessions/a.jsonl";
+    const std::string newMessage =
+        "{\"type\":\"event_msg\",\"payload\":{\"message\":\"added after interruption\"}}\n";
+    write(session, read(session) + newMessage);
+    {
+      Db db(home / "state_5.sqlite");
+      db.exec("UPDATE threads SET title='new title' WHERE id='a'");
+    }
+    if (scenario == 0) {
+      // Completion persisted but latest/pending cleanup was interrupted.
+      fs::remove(parent / "latest.json");
+      write(parent / "pending.json", pointer);
+      for (int invalid = 0; invalid < 3; ++invalid) {
+        auto malformed = manifest;
+        if (invalid == 0) malformed["home"] = utf8(root);
+        if (invalid == 1) malformed["kind"] = "restore";
+        if (invalid == 2) malformed["status"] = "unexpected";
+        write(manifestPath, malformed.dump(2));
+        bool rejected = false;
+        try { recoverPending(home); } catch (...) { rejected = true; }
+        ensure(rejected && fs::exists(parent / "pending.json") &&
+                   read(configPath) == candidate &&
+                   currentProvider(metadata(read(session))) == "custom",
+               "Recovery accepted invalid pending ownership/kind/status");
+      }
+      write(manifestPath, manifest.dump(2));
+      recoverPending(home);
+      ensure(read(parent / "latest.json") == pointer &&
+                 currentProvider(metadata(read(session))) == "custom",
+             "Completed recovery reverted history or lost latest pointer");
+      // Keep the ordinary manual undo contract after finishing completion.
+      operate(home, true);
+      ensure(currentProvider(metadata(read(session))) == "openai" &&
+                 read(session).find(newMessage) != std::string::npos,
+             "Completed recovery broke undo or lost new messages");
+    } else {
+      manifest["status"] = scenario == 2 ? "recovery_required" : "prepared";
+      write(manifestPath, manifest.dump(2));
+      write(parent / "pending.json", pointer);
+      // Simulate partial application, including a committed DB row. The other
+      // session/row are already restored and must remain safe on retry.
+      const auto other = home / "sessions/b.jsonl";
+      auto bytes = read(other);
+      const auto meta = metadata(bytes);
+      bytes.replace(meta.offset, meta.length, changedLine(meta, "openai"));
+      write(other, bytes);
+      {
+        Db db(home / "state_5.sqlite");
+        db.exec("UPDATE threads SET model_provider='openai' WHERE id='b'");
+      }
+      if (scenario == 3) {
+        // Simulate a prepared transaction before any effective writes.
+        auto bytes = read(session);
+        const auto meta = metadata(bytes);
+        bytes.replace(meta.offset, meta.length, changedLine(meta, "openai"));
+        write(session, bytes);
+        Db db(home / "state_5.sqlite");
+        db.exec("UPDATE threads SET model_provider='openai' WHERE id='a'");
+      }
+      if (scenario == 2) {
+        // A caller that only invokes sync still gets automatic recovery.
+        operate(home, false);
+        ensure(currentProvider(metadata(read(session))) == "custom",
+               "Sync did not recover and reapply interrupted history");
+      } else {
+        const auto report = recoverPending(home);
+        ensure(report.at("recovered") == true &&
+                   currentProvider(metadata(read(session))) == "openai",
+               "Pending recovery did not restore partial history");
+        if (scenario == 3)
+          ensure(report.at("files") == 0 && report.at("rows") == 0,
+                 "No-write interruption recovery made unnecessary changes");
+        ensure(read(configPath) == candidate,
+               "Automatic recovery replaced the next switch configuration");
+      }
+    }
+    ensure(!fs::exists(parent / "pending.json") &&
+               read(session).find(newMessage) != std::string::npos,
+           "Automatic recovery left pending state or lost appended messages");
+    {
+      Db db(home / "state_5.sqlite");
+      Stmt title(db, "SELECT title FROM threads WHERE id='a'");
+      ensure(sqlite3_step(title.p) == SQLITE_ROW &&
+                 std::string(reinterpret_cast<const char *>(sqlite3_column_text(title.p, 0))) == "new title",
+             "Automatic recovery lost a new database title");
+    }
+    operate(home, false);
+    ensure(!fs::exists(parent / "pending.json") &&
+               currentProvider(metadata(read(session))) == "custom" &&
+               read(session).find(newMessage) != std::string::npos,
+           "Switch after automatic recovery failed");
+    ensure(recoverPending(home).at("recovered") == false,
+           "Recovery without pending transaction changed state");
+  }
 }
 void selfTest() {
   auto temp =
@@ -717,6 +890,7 @@ void selfTest() {
       fs::remove_all(p, e);
     }
   } cleanup{home};
+  recoverySelfTest(home);
   const auto external = home / "external-sqlite";
   fs::create_directories(external);
   // Explicit synthetic SQLite location prevents inherited CODEX_SQLITE_HOME
@@ -969,6 +1143,23 @@ extern "C" char *yilai_sync_history(const char *home, int restore,
   } catch (...) {
     if (error)
       *error = copy("History operation failed");
+  }
+  return nullptr;
+}
+extern "C" char *yilai_recover_history(const char *home, char **error) {
+  if (error)
+    *error = nullptr;
+  try {
+    ensure(home != nullptr, "Missing Codex home");
+    auto *result = copy(recoverPending(from(home)).dump());
+    ensure(result != nullptr, "Out of memory");
+    return result;
+  } catch (const std::exception &e) {
+    if (error)
+      *error = copy(e.what());
+  } catch (...) {
+    if (error)
+      *error = copy("History recovery failed");
   }
   return nullptr;
 }

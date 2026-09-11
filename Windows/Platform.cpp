@@ -5,6 +5,7 @@
 #include "ConfigRewrite.h"
 #include "HistorySync.h"
 #include "Diagnostics.h"
+#include "OperationGuard.h"
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -57,7 +58,16 @@ void regular(const fs::path &p) {
   ensure(fs::is_regular_file(p) && !(flags & FILE_ATTRIBUTE_REPARSE_POINT),
          "Expected a regular file, not a link");
 }
-void atomic(const fs::path &p, const std::string &data) {
+std::string windowsFailure(const char *action, DWORD code) {
+  LPWSTR detail = nullptr;
+  FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                 nullptr, code, 0, reinterpret_cast<LPWSTR>(&detail), 0, nullptr);
+  std::string result = std::string(action) + "（Windows 错误码 " + std::to_string(code) + "）";
+  if (detail) { result += "：" + utf8(detail); LocalFree(detail); }
+  return result;
+}
+void atomic(const fs::path &p, const std::string &data, bool replace = true) {
   regular(p);
   fs::create_directories(p.parent_path());
   auto tmp = p;
@@ -68,18 +78,24 @@ void atomic(const fs::path &p, const std::string &data) {
   HANDLE file =
       CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-  ensure(file != INVALID_HANDLE_VALUE, "Cannot create temporary configuration");
+  if (file == INVALID_HANDLE_VALUE)
+    throw std::runtime_error(windowsFailure("无法创建临时配置文件", GetLastError()));
   DWORD written = 0;
   bool ok =
       data.size() <= MAXDWORD &&
       WriteFile(file, data.data(), DWORD(data.size()), &written, nullptr) &&
       written == data.size() && FlushFileBuffers(file);
+  DWORD failureCode = ok ? ERROR_SUCCESS : GetLastError();
   CloseHandle(file);
-  if (!ok || !MoveFileExW(tmp.c_str(), p.c_str(),
-                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+  if (ok && !MoveFileExW(tmp.c_str(), p.c_str(),
+                         (replace ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH)) {
+    failureCode = GetLastError();
+    ok = false;
+  }
+  if (!ok) {
     std::error_code ignored;
     fs::remove(tmp, ignored);
-    throw std::runtime_error("Atomic configuration write failed");
+    throw std::runtime_error(windowsFailure("无法写入连接配置", failureCode));
   }
 }
 void requireAppsClosed() {
@@ -146,6 +162,12 @@ std::wstring mode(const fs::path &root) {
 static std::wstring perform(Action action, const fs::path &root,
                             const std::wstring &input, bool closed,
                             OperationLog &log) {
+  log.step("lock_operation", "检查其他配置器操作");
+  char *lockError = nullptr;
+  std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> operationLock(
+      yilai_operation_lock(utf8(root.wstring()).c_str(), &lockError), yilai_operation_unlock);
+  Buffer lockDetail(lockError, yilai_config_free);
+  ensure(operationLock != nullptr, lockDetail ? lockDetail.get() : "无法取得操作锁");
   log.step("checking_apps", "检查后台程序");
   if (closed)
     requireAppsClosed();
@@ -160,8 +182,8 @@ static std::wstring perform(Action action, const fs::path &root,
                 std::to_wstring(std::chrono::high_resolution_clock::now()
                                     .time_since_epoch()
                                     .count());
-    ensure(MoveFileW(config.c_str(), disabled.c_str()) != FALSE,
-           "无法停用旧配置，请关闭 Codex 和 CC-Switch 后重试。");
+    if (!MoveFileW(config.c_str(), disabled.c_str()))
+      throw std::runtime_error(windowsFailure("无法停用旧配置", GetLastError()));
     return L"旧配置已停用。填写 API Key 后可重新切换。";
   }
   if (action == Action::Sync || action == Action::Undo) {
@@ -174,6 +196,13 @@ static std::wstring perform(Action action, const fs::path &root,
     ensure(result != nullptr,
            detail ? detail.get() : "History operation failed");
     return action == Action::Sync ? L"本地历史已同步。" : L"已撤销历史同步。";
+  }
+  if (action == Action::Configure || action == Action::Official) {
+    log.step("recover_history", "恢复上次未完成的历史操作");
+    char *recoveryError = nullptr;
+    Buffer recovered(yilai_recover_history(utf8(root.wstring()).c_str(), &recoveryError), yilai_config_free);
+    Buffer recoveryDetail(recoveryError, yilai_config_free);
+    ensure(recovered != nullptr, recoveryDetail ? recoveryDetail.get() : "历史恢复失败");
   }
   log.step("prepare_config", "准备连接配置");
   regular(config);
@@ -212,12 +241,16 @@ static std::wstring perform(Action action, const fs::path &root,
   bool wroteConfig = false, removedAuth = false;
   try {
     log.step("write_config", "写入连接配置");
+    ensure(fs::exists(config) == hadConfig && (hadConfig ? read(config) : "") == before,
+           "配置已被其他程序改动，请关闭后重试。");
     atomic(config, after);
     wroteConfig = true;
     log.step("delete_auth", "删除旧登录文件");
+    ensure(fs::exists(authPath) == hadAuth && (hadAuth ? read(authPath) : "") == authBefore,
+           "登录文件已被其他程序改动，请关闭后重试。");
     if (hadAuth) {
-      ensure(fs::remove(authPath),
-             "无法删除登录文件，请完全退出 Codex 后重试。");
+      if (!DeleteFileW(authPath.c_str()))
+        throw std::runtime_error(windowsFailure("无法删除登录文件", GetLastError()));
       removedAuth = true;
     }
     ensure(!fs::exists(authPath),
@@ -232,31 +265,39 @@ static std::wstring perform(Action action, const fs::path &root,
            syncDetail ? syncDetail.get() : "History synchronization failed");
   } catch (...) {
     const auto failedStage = log.stage, failedLabel = log.label;
+    std::string originalError = "未知错误";
+    try { throw; } catch (const std::exception &e) { originalError = e.what(); } catch (...) {}
+    yilai_diagnostic_event(log.context, "switch_failed", originalError.c_str());
     bool restored = true;
     log.step("rollback_config", "还原连接配置");
     try {
       if (wroteConfig) {
+        ensure(fs::exists(config) && read(config) == after,
+               "配置已被外部修改，未覆盖外部改动。");
         if (hadConfig)
           atomic(config, before);
         else
           fs::remove(config);
       }
       yilai_diagnostic_event(log.context, "rollback_config", "还原完成");
-    } catch (...) {
+    } catch (const std::exception &e) {
       restored = false;
-      yilai_diagnostic_event(log.context, "rollback_config", "还原失败");
+      yilai_diagnostic_event(log.context, "rollback_config", e.what());
     }
     log.step("rollback_auth", "还原登录文件");
     try {
-      if (removedAuth)
-        atomic(authPath, authBefore);
+      if (removedAuth) {
+        ensure(!fs::exists(authPath), "登录文件已由外部重新创建，未覆盖外部改动。");
+        atomic(authPath, authBefore, false);
+      }
       yilai_diagnostic_event(log.context, "rollback_auth", "还原完成");
-    } catch (...) {
+    } catch (const std::exception &e) {
       restored = false;
-      yilai_diagnostic_event(log.context, "rollback_auth", "还原失败");
+      yilai_diagnostic_event(log.context, "rollback_auth", e.what());
     }
     log.step(failedStage.c_str(), failedLabel.c_str());
-    ensure(restored, "切换未完成且回滚不完整，请保留历史备份并联系支持。");
+    if (!restored)
+      throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
     throw;
   }
   return action == Action::Official
@@ -280,10 +321,11 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
   } catch (const std::exception &error) {
     Buffer clean(yilai_diagnostic_sanitize(log.context, error.what()),
                  yilai_config_free);
-    const std::string message =
+    std::string message =
         log.label + "失败：" + (clean ? clean.get() : "错误详情不可用");
     yilai_diagnostic_event(log.context, log.stage.c_str(), message.c_str());
-    yilai_diagnostic_end(log.context, 0, message.c_str());
+    if (!yilai_diagnostic_finish(log.context, 0, message.c_str()))
+      message += " 诊断日志未能完整保存，请保留当前错误信息。";
     throw std::runtime_error(message);
   } catch (...) {
     yilai_diagnostic_end(log.context, 0, "未知错误");
@@ -334,8 +376,29 @@ bool selfTest(std::wstring &error) {
         "switch-model-catalog.json'\n[model_providers.custom]\nname='Other'"
         "\nbase_url='https://other.invalid'\nwire_api='responses'\n";
     const std::string auth = "{\"auth_mode\":\"chatgpt\"}";
+    const auto noReplacePath = root / L"no-replace-auth.json";
+    atomic(noReplacePath, "existing-auth");
+    bool collisionRejected = false;
+    try { atomic(noReplacePath, "replacement-auth", false); }
+    catch (...) { collisionRejected = true; }
+    ensure(collisionRejected && read(noReplacePath) == "existing-auth",
+           "Authentication restore overwrote an existing file");
+    fs::remove(noReplacePath);
+    atomic(noReplacePath, "restored-auth", false);
+    ensure(read(noReplacePath) == "restored-auth", "No-replace auth restoration failed");
+    fs::remove(noReplacePath);
     atomic(root / L"config.toml", config);
     atomic(root / L"auth.json", auth);
+    char *lockFailure = nullptr;
+    auto held = yilai_operation_lock(utf8(root.wstring()).c_str(), &lockFailure);
+    Buffer lockFailureText(lockFailure, yilai_config_free);
+    ensure(held != nullptr, "Cannot establish isolated operation lock");
+    bool rejected = false;
+    try { run(Action::Configure, root, L"sk-test", false); }
+    catch (const std::exception &e) { rejected = std::string(e.what()).find("另一个配置器") != std::string::npos; }
+    yilai_operation_unlock(held);
+    ensure(rejected && read(root / L"config.toml") == config && read(root / L"auth.json") == auth,
+           "Overlapping operation was not rejected without changes");
     HANDLE locked = CreateFileW((root / L"auth.json").c_str(), GENERIC_READ,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

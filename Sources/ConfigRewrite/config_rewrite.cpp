@@ -92,8 +92,23 @@ void install_custom(toml::table &root, toml::table provider) {
   const auto previous_root =
       root["model_provider"].value_or(std::string("openai"));
   auto &providers = table_at(root, "model_providers");
+  auto *profiles = root["profiles"].as_table();
+  bool referenced_elsewhere = profile && previous_root == "custom";
+  if (profiles)
+    for (auto &[name, node] : *profiles) {
+      auto *other = node.as_table();
+      if (!other || other == profile)
+        continue;
+      if ((*other)["model_provider"] == "custom" ||
+          (!profile && !other->contains("model_provider") &&
+           previous_root == "custom"))
+        referenced_elsewhere = true;
+    }
   std::string previous_custom = "custom";
-  if (auto *previous = providers["custom"].as_table()) {
+  auto *previous = providers["custom"].as_table();
+  // Archive only a changed route still used outside the selected scope. An
+  // unreferenced old connection is replaced, not retained with its old key.
+  if (previous && *previous != provider && referenced_elsewhere) {
     previous_custom = "yilai-sync-previous-custom";
     for (int i = 2; providers.contains(previous_custom); ++i)
       previous_custom = "yilai-sync-previous-custom-" + std::to_string(i);
@@ -101,16 +116,16 @@ void install_custom(toml::table &root, toml::table provider) {
     if (profile && previous_root == "custom")
       root.insert_or_assign("model_provider", previous_custom);
   }
-  if (auto *profiles = root["profiles"].as_table()) {
+  if (profiles) {
     for (auto &[name, node] : *profiles) {
       auto *other = node.as_table();
       if (!other || other == profile)
         continue;
-      if ((*other)["model_provider"] == "custom")
+      if ((*other)["model_provider"] == "custom" && previous_custom != "custom")
         other->insert_or_assign("model_provider", previous_custom);
-      else if (!profile && !other->contains("model_provider"))
-        // Changing the root must not change an inactive profile's inherited
-        // route.
+      else if (!profile && !other->contains("model_provider") &&
+               (previous_root != "custom" || previous_custom != "custom"))
+        // Pin inherited routes only when the root's route actually changes.
         other->insert_or_assign("model_provider", previous_root == "custom"
                                                       ? previous_custom
                                                       : previous_root);
@@ -142,6 +157,9 @@ toml::table rewrite(const char *text, const char *key, int action) {
                          {"wire_api", "responses"},
                          {"requires_openai_auth", false},
                          {"experimental_bearer_token", token}};
+    table_at(provider, "http_headers")
+        .insert_or_assign("x-openai-actor-authorization",
+                          "local-image-extension");
     install_custom(root, std::move(provider));
     clear_active_connection_constraints(root);
     enhance(root);
@@ -268,6 +286,73 @@ enabled = true
   check(connected["model_providers"]["spare"] ==
             before["model_providers"]["spare"],
         "Inactive provider changed.");
+  auto standalone = rewrite("model = 'gpt-6-astra'\n", "first-key", YILAI_CONFIGURE);
+  for (int i = 0; i < 8; ++i)
+    check(rewrite(format(standalone).c_str(), "first-key", YILAI_CONFIGURE) ==
+              standalone,
+          "Repeated API switching must be idempotent.");
+  auto new_key = rewrite(format(standalone).c_str(), "second-key", YILAI_CONFIGURE);
+  check(new_key["model_providers"].as_table()->size() == 1 &&
+            new_key["model_providers"]["custom"]["experimental_bearer_token"] ==
+                "second-key" &&
+            format(new_key).find("first-key") == std::string::npos,
+        "An unreferenced old API connection or key was archived.");
+  auto roundtrip = new_key;
+  for (int i = 0; i < 8; ++i) {
+    roundtrip = rewrite(format(roundtrip).c_str(), "", YILAI_OFFICIAL);
+    check(roundtrip["model_providers"].as_table()->size() == 1 &&
+              format(roundtrip).find("second-key") == std::string::npos,
+          "Official switching archived an unreferenced API key.");
+    roundtrip = rewrite(format(roundtrip).c_str(), "second-key", YILAI_CONFIGURE);
+    check(roundtrip == new_key,
+          "API/official round trips accumulated unused providers.");
+  }
+  auto identical_shared = standalone;
+  table_at(table_at(identical_shared, "profiles"), "personal")
+      .insert_or_assign("model_provider", "custom");
+  table_at(table_at(identical_shared, "profiles"), "inherited")
+      .insert_or_assign("model", "gpt-6-astra");
+  check(rewrite(format(identical_shared).c_str(), "first-key", YILAI_CONFIGURE) ==
+            identical_shared,
+        "An unchanged shared provider was unnecessarily archived or pinned.");
+  identical_shared.insert_or_assign("profile", "work");
+  auto &same_work = table_at(table_at(identical_shared, "profiles"), "work");
+  same_work.insert_or_assign("model_provider", "custom");
+  table_at(same_work, "features").insert_or_assign("image_generation", true);
+  check(rewrite(format(identical_shared).c_str(), "first-key", YILAI_CONFIGURE) ==
+            identical_shared,
+        "An unchanged active profile redirected the root or another profile.");
+  auto changed_shared =
+      rewrite(format(identical_shared).c_str(), "second-key", YILAI_CONFIGURE);
+  check(changed_shared["model_providers"].as_table()->size() == 2 &&
+            changed_shared["model_provider"] == "yilai-sync-previous-custom" &&
+            changed_shared["profiles"]["personal"]["model_provider"] ==
+                "yilai-sync-previous-custom" &&
+            !changed_shared["profiles"]["inherited"]["model_provider"] &&
+            changed_shared["model_providers"]["yilai-sync-previous-custom"] ==
+                identical_shared["model_providers"]["custom"],
+        "Changing a shared key did not preserve inactive root/profile routes.");
+  check(rewrite(format(changed_shared).c_str(), "second-key", YILAI_CONFIGURE) ==
+            changed_shared,
+        "Repeated profile switching kept archiving its unreferenced route.");
+  auto shared_roundtrip = changed_shared;
+  for (int i = 0; i < 4; ++i) {
+    shared_roundtrip = rewrite(format(shared_roundtrip).c_str(), "", YILAI_OFFICIAL);
+    shared_roundtrip =
+        rewrite(format(shared_roundtrip).c_str(), "second-key", YILAI_CONFIGURE);
+    check(shared_roundtrip == changed_shared,
+          "Shared-profile round trips lost a saved route or added providers.");
+  }
+  auto retained_legacy = standalone;
+  table_at(retained_legacy, "model_providers")
+      .insert_or_assign("yilai-sync-previous-custom",
+                        toml::table{{"name", "Keep existing saved route"}});
+  auto retained_changed =
+      rewrite(format(retained_legacy).c_str(), "second-key", YILAI_CONFIGURE);
+  check(retained_changed["model_providers"].as_table()->size() == 2 &&
+            retained_changed["model_providers"]["yilai-sync-previous-custom"] ==
+                retained_legacy["model_providers"]["yilai-sync-previous-custom"],
+        "Switching removed or replaced an existing historical provider.");
   auto cleared = rewrite(format(connected).c_str(), "", YILAI_CLEANUP);
   check(!cleared.contains("forced_login_method") &&
             cleared["model_catalog_json"] == before["model_catalog_json"],

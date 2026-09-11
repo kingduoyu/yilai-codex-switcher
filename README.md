@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.1
+# 易来 Codex 配置器 v3.3.2
 
 Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 Codex 即可。
 
@@ -14,7 +14,7 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 
 ## 错误反馈
 
-每次操作会自动写入 CODEX_HOME/yilai-switcher-logs。失败时界面显示具体阶段和原因，并出现“查看日志”入口；可将对应日志发给支持人员。日志包含版本、平台、操作步骤、错误与回滚结果，不记录配置全文、登录内容或对话正文，Key/令牌会脱敏。日志写入失败不会改变切换操作的成败。这些日志仅记录配置器操作，不采集 Codex 后续聊天或网络请求；切换不会验证 Key 额度或服务端模型权限。
+每次操作会自动写入 CODEX_HOME/yilai-switcher-logs。失败时界面显示具体阶段和原因，并出现“查看日志”入口；可将对应日志发给支持人员。日志包含版本、平台、操作步骤、错误与回滚结果，不记录配置全文、登录内容或对话正文，Key/令牌会脱敏。日志写入失败不会改变切换操作的成败；操作失败且日志无法完整保存时，会在错误信息中明确说明。这些日志仅记录配置器操作，不采集 Codex 后续聊天或网络请求；切换不会验证 Key 额度或服务端模型权限。
 
 ## 切换行为
 
@@ -22,6 +22,9 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 - 两个切换按钮都会删除当前 CODEX_HOME/auth.json，再自动同步已有本地历史。默认使用当前用户 .codex；设置 CODEX_HOME 时跟随它。
 - 采用 CCS v3.20.2 关闭保留官方登录的认证方式：独立 bearer token + 关闭官方认证 + 删除登录文件。不会写空 auth 对象、不会锁文件、不扫描旧登录档案，也不清理系统钥匙串或 Windows 凭据管理器。
 - 切换保留模型和 CCS 模型目录，移除当前连接的强制登录/地址覆盖。官方使用原生认证，不保留第三方 token/地址/生图占位请求头。TOML 会规范化，原注释不保留。
+- 同一 CODEX_HOME 的完整操作互斥，多个配置器同时操作时会拒绝后来的操作；锁随进程退出释放。
+- 切换前自动检查上次中断的历史同步，完成收尾或恢复后继续；未知状态或无法安全恢复时保留现场并报错。重置仍只停用配置，不触发历史恢复。
+- 相同连接重复切换不增加备用 provider；只有其他 profile 确实需要旧连接时才保留。已有旧备用节点不自动批量删除。
 - 只在所有步骤完成后显示切换成功。普通写入、登录删除或历史同步失败时，还原本次连接和登录改动；历史核心负责自身回滚。不要在操作中启动 Codex/CCS 或强制结束进程。
 
 ## 本地历史
@@ -34,12 +37,12 @@ Windows / macOS 原生小工具。填写 API Key，选择连接，重新打开 C
 
 ## 验证与开发
 
-配置规则：Sources/ConfigRewrite。历史核心：Sources/HistorySync。Windows 界面与文件操作：Windows。macOS：Sources/App。
+配置规则：Sources/ConfigRewrite。历史核心：Sources/HistorySync。完整操作互斥：Sources/OperationGuard。Windows 界面与文件操作：Windows。macOS：Sources/App。
 
-Windows：pwsh -File Windows/build.ps1，然后运行 dist/windows/YilaiCodexSwitcher.exe --self-test。
+Windows：pwsh -File Windows/build.ps1，然后运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py 验证真实失败后的日志按钮状态。
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；正式通用版由 Build macOS app 工作流构建、执行自测、校验 DMG 并截图。
 
 真实运行时验证：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。需要 Node.js、Python 和 LLVM-MinGW。测试使用独立数据目录与本机模拟 Responses 服务，验证 auth 删除后无需官方登录、API Key 实际请求认证、内置生图工具、自动同步与继续对话；不调用付费模型。
 
-版本事实见 releases/v3.3.1/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.2/RELEASE-MANIFEST.md，制品校验值见 SHA256SUMS.txt。

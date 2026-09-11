@@ -18,6 +18,10 @@ const char *yilai_diagnostic_path(const YilaiDiagnostic *context);
 // Works with a null context, but then only generic secret patterns are known.
 char *yilai_diagnostic_sanitize(const YilaiDiagnostic *context,
                                 const char *message);
+// Whether the log is still writable. No business operation depends on this.
+int yilai_diagnostic_available(const YilaiDiagnostic *context);
+// Writes final outcome, releases context, and returns whether the log was saved.
+int yilai_diagnostic_finish(YilaiDiagnostic *context, int success, const char *message);
 // Records the final outcome and releases the context. Never throws.
 void yilai_diagnostic_end(YilaiDiagnostic *context, int success,
                           const char *message);
