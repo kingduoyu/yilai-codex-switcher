@@ -15,3 +15,5 @@ Limits: no paid image-generation or production official-login test, no Intel har
 | YilaiCodexSwitcher-v3.3.7.exe | 3885568 | 5953b64ec3d54b627a6c7b3062a0f92c1e13ff14cc50eec02e521bb39f1ee244 |
 | YilaiCodexSwitcher-v3.3.7-macOS-universal.dmg | 4783328 | cf0d42a8c30b1d4fe9f4b642fb59869480ccb5232a0c67ab20dce9349dfdabab |
 | YilaiCodexSwitcher-v3.3.7-macOS-universal.zip | 4001626 | 87ada18a85db1dfddc410e0090ebf282fcc0254fb0219e50b19dbee01eeb57e2 |
+
+Publication confirmed: 2026-09-11T16:46:13Z UTC, latest v3.3.7, not draft/prerelease. Four remote asset hashes/sizes and local publish copies verified. Release target b0d06d9; application source unchanged from 520673d.
