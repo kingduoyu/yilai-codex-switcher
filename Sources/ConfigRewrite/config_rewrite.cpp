@@ -61,7 +61,7 @@ bool is_yilai(const toml::table *provider) {
 }
 void enhance(toml::table &root) {
   auto *provider = selected_provider(root);
-  // These are the only changes made by the default operation.
+  // Image support is part of the API configuration operation.
   table_at(root, "features").insert_or_assign("image_generation", true);
   if (auto *profile = active_profile(root))
     table_at(*profile, "features").insert_or_assign("image_generation", true);
@@ -69,13 +69,6 @@ void enhance(toml::table &root) {
     table_at(*provider, "http_headers")
         .insert_or_assign("x-openai-actor-authorization",
                           "local-image-extension");
-}
-void remove_owned_catalog(toml::table &scope) {
-  auto value = scope["model_catalog_json"].value_or(std::string());
-  auto offset = value.find_last_of("/\\");
-  if (value.substr(offset == std::string::npos ? 0 : offset + 1) ==
-      "yilai-model-catalog.json")
-    scope.erase("model_catalog_json");
 }
 void clear_active_connection_constraints(toml::table &root) {
   // The selected profile inherits root constraints; inactive profile tables
@@ -199,24 +192,16 @@ void install_custom(toml::table &root, toml::table provider) {
   providers.insert_or_assign("custom", std::move(provider));
   (profile ? *profile : root).insert_or_assign("model_provider", "custom");
 }
-toml::table rewrite(const char *text, const char *key, int action) {
+toml::table configure(const char *text, const char *key) {
   auto root = toml::parse(text);
-  auto *profile = active_profile(root);
-  if (action == YILAI_ENHANCE) {
-    if (root.empty())
-      throw std::runtime_error("Configure a connection in CCS first, or use "
-                               "Configure Yilai with an API key.");
-    enhance(root);
-  } else if (action == YILAI_CONFIGURE) {
     const std::string token(key);
     if (token.empty() ||
         std::any_of(token.begin(), token.end(),
                     [](unsigned char c) { return c < 32 || c == 127; }))
       throw std::runtime_error(
           "A non-empty API key without control characters is required.");
-    // Explicit connection configuration, not the default image operation.
-    // CCS uses custom for its third-party session bucket. Model/catalog/auth
-    // files stay intact.
+    // Preserve existing model selections and catalog pointers, including our
+    // own catalog. API configuration must not hand model ownership to CCS.
     toml::table provider{{"name", "易来 API"},
                          {"base_url", "https://api.yilai-ai.com"},
                          {"wire_api", "responses"},
@@ -228,41 +213,9 @@ toml::table rewrite(const char *text, const char *key, int action) {
     install_custom(root, std::move(provider));
     clear_active_connection_constraints(root);
     enhance(root);
-  } else if (action == YILAI_CLEANUP) {
-    auto *provider = selected_provider(root);
-    if (!is_yilai(provider) ||
-        (*provider)["experimental_bearer_token"]
-            .value_or(std::string())
-            .empty() ||
-        (*provider)["requires_openai_auth"].value_or(true))
-      throw std::runtime_error(
-          "Cleanup requires a direct Yilai connection with its own bearer key. "
-          "Use Configure Yilai first; official/CCS credentials are protected.");
-    for (auto *scope : {&root, profile})
-      if (scope) {
-        for (const char *field :
-             {"forced_login_method", "forced_chatgpt_workspace_id",
-              "openai_base_url"})
-          scope->erase(field);
-        scope->insert_or_assign("cli_auth_credentials_store", "file");
-        remove_owned_catalog(*scope);
-      }
-  } else if (action == YILAI_UNIFY_HISTORY) {
-    auto id = provider_id(root);
-    auto *current = selected_provider(root);
-    if (id != "custom") {
-      toml::table unified = current
-                                ? *current
-                                : toml::table{{"name", "OpenAI"},
-                                              {"wire_api", "responses"},
-                                              {"requires_openai_auth", true},
-                                              {"supports_websockets", true}};
-      install_custom(root, std::move(unified));
-    }
-  } else
-    throw std::runtime_error("Unknown configuration operation.");
   return root;
 }
+
 std::string format(const toml::table &root) {
   std::ostringstream out;
   out << toml::toml_formatter{root, toml::format_flags::allow_unicode_strings}
@@ -311,19 +264,7 @@ command = "keep"
 enabled = true
 )toml";
   auto before = toml::parse(ccs);
-  auto expected = before;
-  table_at(expected, "features").insert_or_assign("image_generation", true);
-  table_at(*active_profile(expected), "features")
-      .insert_or_assign("image_generation", true);
-  table_at(*selected_provider(expected), "http_headers")
-      .insert_or_assign("x-openai-actor-authorization",
-                        "local-image-extension");
-  auto enabled = rewrite(ccs, "", YILAI_ENHANCE);
-  check(enabled == expected,
-        "Image enhancement modified unrelated CCS values.");
-  check(rewrite(format(enabled).c_str(), "", YILAI_ENHANCE) == enabled,
-        "Enhancement is not idempotent.");
-  auto connected = rewrite(ccs, "new-key", YILAI_CONFIGURE);
+  auto connected = configure(ccs, "new-key");
   check(connected["model"] == before["model"] &&
             connected["model_catalog_json"] == before["model_catalog_json"],
         "Configuration changed model/catalog.");
@@ -336,12 +277,12 @@ enabled = true
   check(connected["model_providers"]["spare"] ==
             before["model_providers"]["spare"],
         "Inactive provider changed.");
-  auto standalone = rewrite("model = 'gpt-6-astra'\n", "first-key", YILAI_CONFIGURE);
+  auto standalone = configure("model = 'gpt-6-astra'\n", "first-key");
   for (int i = 0; i < 8; ++i)
-    check(rewrite(format(standalone).c_str(), "first-key", YILAI_CONFIGURE) ==
+    check(configure(format(standalone).c_str(), "first-key") ==
               standalone,
           "Repeated API switching must be idempotent.");
-  auto new_key = rewrite(format(standalone).c_str(), "second-key", YILAI_CONFIGURE);
+  auto new_key = configure(format(standalone).c_str(), "second-key");
   check(new_key["model_providers"].as_table()->size() == 1 &&
             new_key["model_providers"]["custom"]["experimental_bearer_token"] ==
                 "second-key" &&
@@ -352,18 +293,18 @@ enabled = true
       .insert_or_assign("model_provider", "custom");
   table_at(table_at(identical_shared, "profiles"), "inherited")
       .insert_or_assign("model", "gpt-6-astra");
-  check(rewrite(format(identical_shared).c_str(), "first-key", YILAI_CONFIGURE) ==
+  check(configure(format(identical_shared).c_str(), "first-key") ==
             identical_shared,
         "An unchanged shared provider was unnecessarily archived or pinned.");
   identical_shared.insert_or_assign("profile", "work");
   auto &same_work = table_at(table_at(identical_shared, "profiles"), "work");
   same_work.insert_or_assign("model_provider", "custom");
   table_at(same_work, "features").insert_or_assign("image_generation", true);
-  check(rewrite(format(identical_shared).c_str(), "first-key", YILAI_CONFIGURE) ==
+  check(configure(format(identical_shared).c_str(), "first-key") ==
             identical_shared,
         "An unchanged active profile redirected the root or another profile.");
   auto changed_shared =
-      rewrite(format(identical_shared).c_str(), "second-key", YILAI_CONFIGURE);
+      configure(format(identical_shared).c_str(), "second-key");
   check(changed_shared["model_providers"].as_table()->size() == 2 &&
             changed_shared["model_provider"] == "yilai-sync-previous-custom" &&
             changed_shared["profiles"]["personal"]["model_provider"] ==
@@ -372,7 +313,7 @@ enabled = true
             changed_shared["model_providers"]["yilai-sync-previous-custom"] ==
                 identical_shared["model_providers"]["custom"],
         "Changing a shared key did not preserve inactive root/profile routes.");
-  check(rewrite(format(changed_shared).c_str(), "second-key", YILAI_CONFIGURE) ==
+  check(configure(format(changed_shared).c_str(), "second-key") ==
             changed_shared,
         "Repeated profile switching kept archiving its unreferenced route.");
   auto retained_legacy = standalone;
@@ -380,33 +321,11 @@ enabled = true
       .insert_or_assign("yilai-sync-previous-custom",
                         toml::table{{"name", "Keep existing saved route"}});
   auto retained_changed =
-      rewrite(format(retained_legacy).c_str(), "second-key", YILAI_CONFIGURE);
+      configure(format(retained_legacy).c_str(), "second-key");
   check(retained_changed["model_providers"].as_table()->size() == 2 &&
             retained_changed["model_providers"]["yilai-sync-previous-custom"] ==
                 retained_legacy["model_providers"]["yilai-sync-previous-custom"],
         "Switching removed or replaced an existing historical provider.");
-  auto cleared = rewrite(format(connected).c_str(), "", YILAI_CLEANUP);
-  check(!cleared.contains("forced_login_method") &&
-            cleared["model_catalog_json"] == before["model_catalog_json"],
-        "Cleanup did not preserve CCS catalog.");
-  auto owned = connected;
-  owned.insert_or_assign("model_catalog_json",
-                         "C:\\codex\\yilai-model-catalog.json");
-  check(!rewrite(format(owned).c_str(), "", YILAI_CLEANUP)
-             .contains("model_catalog_json"),
-        "Owned stale catalog pointer not cleared.");
-  for (auto action : {YILAI_CLEANUP}) {
-    bool rejected = false;
-    try {
-      rewrite(ccs, "", action);
-    } catch (...) {
-      rejected = true;
-    }
-    check(rejected, "Other provider credentials must not be cleaned.");
-  }
-  auto repaired = rewrite(ccs, "", YILAI_UNIFY_HISTORY);
-  check(repaired == before, "Legacy alias does not use current route.");
-
   const char *multiple_profiles = R"toml(
 profile='work'
 model_provider='custom'
@@ -423,18 +342,8 @@ model_provider='custom'
 [profiles.inherited]
 model='unchanged'
 )toml";
-  auto unified_profiles = rewrite(multiple_profiles, "", YILAI_UNIFY_HISTORY);
-  check(unified_profiles["profiles"]["work"]["model_provider"] == "custom",
-        "Active profile was not unified.");
-  check(unified_profiles["model_provider"] == "yilai-sync-previous-custom" &&
-            unified_profiles["profiles"]["personal"]["model_provider"] ==
-                "yilai-sync-previous-custom" &&
-            unified_profiles["model_providers"]["yilai-sync-previous-custom"]
-                            ["base_url"] == "https://personal.invalid/v1",
-        "History sync redirected an inactive profile or the root connection.");
-
   auto configured_profiles =
-      rewrite(multiple_profiles, "new-key", YILAI_CONFIGURE);
+      configure(multiple_profiles, "new-key");
   check(configured_profiles["profiles"]["work"]["model_provider"] == "custom" &&
             configured_profiles["model_providers"]["custom"]
                                ["experimental_bearer_token"] == "new-key" &&
@@ -453,7 +362,7 @@ model='unchanged'
       .insert_or_assign("yilai-sync-previous-custom",
                         toml::table{{"name", "Existing saved connection"}});
   auto reconfigured =
-      rewrite(format(shared_current).c_str(), "new-key", YILAI_CONFIGURE);
+      configure(format(shared_current).c_str(), "new-key");
   check(reconfigured["profiles"]["work"]["model_provider"] == "custom" &&
             reconfigured["model_provider"] == "yilai-sync-previous-custom-2" &&
             reconfigured["profiles"]["personal"]["model_provider"] ==
@@ -466,11 +375,11 @@ model='unchanged'
         "overwrote a saved connection.");
   auto root_active = toml::parse(multiple_profiles);
   root_active.erase("profile");
-  for (auto action : {YILAI_CONFIGURE, YILAI_UNIFY_HISTORY}) {
+  {
     // With no selected profile, profiles that inherit the root must keep their
     // old backend.
     root_active.insert_or_assign("model_provider", "yilai");
-    auto switched = rewrite(format(root_active).c_str(), "new-key", action);
+    auto switched = configure(format(root_active).c_str(), "new-key");
     check(switched["model_provider"] == "custom" &&
               switched["profiles"]["inherited"]["model_provider"] == "yilai" &&
               switched["profiles"]["personal"]["model_provider"] ==
@@ -480,26 +389,20 @@ model='unchanged'
           "routes.");
     root_active.erase("model_provider");
     auto from_official =
-        rewrite(format(root_active).c_str(), "new-key", action);
+        configure(format(root_active).c_str(), "new-key");
     check(
         from_official["profiles"]["inherited"]["model_provider"] == "openai",
         "An inactive profile lost its inherited built-in official connection.");
   }
   root_active.insert_or_assign("model_provider", "custom");
   auto replaced_root =
-      rewrite(format(root_active).c_str(), "new-key", YILAI_CONFIGURE);
+      configure(format(root_active).c_str(), "new-key");
   check(replaced_root["profiles"]["inherited"]["model_provider"] ==
                 "yilai-sync-previous-custom" &&
             replaced_root["model_providers"]["yilai-sync-previous-custom"] ==
                 root_active["model_providers"]["custom"],
         "An inactive profile inherited new credentials after replacing root "
         "custom.");
-  auto official = rewrite("model = 'gpt-6-astra'\n", "", YILAI_UNIFY_HISTORY);
-  check(official["model_provider"] == "custom" &&
-            official["model_providers"]["custom"]["requires_openai_auth"] ==
-                true &&
-            !official["model_providers"]["custom"]["experimental_bearer_token"],
-        "Official alias carries third-party credentials.");
   auto restricted = connected;
   restricted.insert_or_assign("openai_base_url", "https://third-party.invalid");
   restricted.insert_or_assign("chatgpt_base_url",
@@ -516,7 +419,7 @@ model='unchanged'
                                        "https://third-party.invalid");
   restricted_profile->insert_or_assign("model_catalog_json", "ccs-keep.json");
   auto api_unrestricted =
-      rewrite(format(restricted).c_str(), "new-key", YILAI_CONFIGURE);
+      configure(format(restricted).c_str(), "new-key");
   for (auto *scope : {&api_unrestricted, active_profile(api_unrestricted)})
     check(!scope->contains("forced_login_method") &&
               !scope->contains("forced_chatgpt_workspace_id") &&
@@ -532,11 +435,10 @@ model='unchanged'
             is_yilai(selected_provider(connected)),
         "Provider identity must inspect endpoint.");
   check(!is_yilai(nullptr), "Built-in OpenAI must not be Yilai.");
-  for (const char *bad : {"model = 1\nmodel = 2", "profile = 'missing'",
-                          "model_provider = 'missing'"}) {
+  for (const char *bad : {"model = 1\nmodel = 2", "profile = 'missing'"}) {
     bool rejected = false;
     try {
-      rewrite(bad, "", YILAI_ENHANCE);
+      configure(bad, "test-key");
     } catch (...) {
       rejected = true;
     }
@@ -684,19 +586,19 @@ trust_level = "trusted"
     yilai_config_free(override_error);
     override_error = nullptr;
   }
-  auto escaped = rewrite("", "key-\"quoted\\value", YILAI_CONFIGURE);
+  auto escaped = configure("", "key-\"quoted\\value");
   check(toml::parse(format(escaped)) == escaped,
         "Escaped credentials changed.");
 }
 } // namespace
-extern "C" char *yilai_apply_config(const char *text, const char *key,
-                                    int action, char **error) {
+extern "C" char *yilai_configure_api(const char *text, const char *key,
+                                    char **error) {
   if (error)
     *error = nullptr;
   try {
     if (!text || !key)
       throw std::runtime_error("Missing configuration input.");
-    auto *result = copy_string(format(rewrite(text, key, action)));
+    auto *result = copy_string(format(configure(text, key)));
     if (!result)
       throw std::runtime_error("Out of memory.");
     return result;

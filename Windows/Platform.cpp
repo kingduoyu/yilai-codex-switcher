@@ -1,9 +1,7 @@
 #include <windows.h>
 
 #include "Platform.h"
-#include "../Sources/HistorySync/vendor/json.hpp"
 #include "ConfigRewrite.h"
-#include "HistorySync.h"
 #include "Diagnostics.h"
 #include "OperationGuard.h"
 #include "ConfigSources.h"
@@ -162,8 +160,7 @@ std::wstring mode(const fs::path &root) {
 }
 static std::wstring perform(Action action, const fs::path &root,
                             const std::wstring &input, bool closed,
-                            OperationLog &log, const fs::path &runtimeOverride, bool &historyWarning) {
-  bool historyReady = true;
+                            OperationLog &log, const fs::path &runtimeOverride) {
   log.step("lock_operation", "检查其他配置器操作");
   char *lockError = nullptr;
   std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> operationLock(
@@ -188,28 +185,6 @@ static std::wstring perform(Action action, const fs::path &root,
       throw std::runtime_error(windowsFailure("无法停用旧配置", GetLastError()));
     return L"旧配置已停用。填写 API Key 后可重新切换。";
   }
-  if (action == Action::Sync || action == Action::Undo) {
-    log.step("sync_history", "处理本地历史");
-    char *error = nullptr;
-    Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(),
-                                     action == Action::Undo, &error),
-                  yilai_config_free);
-    Buffer detail(error, yilai_config_free);
-    ensure(result != nullptr,
-           detail ? detail.get() : "History operation failed");
-    return action == Action::Sync ? L"本地历史已同步。" : L"已撤销历史同步。";
-  }
-  if (action == Action::Configure) {
-    log.step("recover_history", "恢复上次未完成的历史操作");
-    char *recoveryError = nullptr;
-    Buffer recovered(yilai_recover_history(utf8(root.wstring()).c_str(), &recoveryError), yilai_config_free);
-    Buffer recoveryDetail(recoveryError, yilai_config_free);
-    if (!recovered) {
-      historyReady = false;
-      historyWarning = true;
-      yilai_diagnostic_event(log.context, "history_warning", recoveryDetail ? recoveryDetail.get() : "历史恢复未完成");
-    }
-  }
   std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(nullptr, yilai_sources_finish);
   if ((action == Action::Configure) && (closed || !runtimeOverride.empty())) {
     log.step("inspect_sources", "识别当前生效来源");
@@ -232,11 +207,9 @@ static std::wstring perform(Action action, const fs::path &root,
             ? L""
             : key.substr(start, key.find_last_not_of(L" \t\r\n") - start + 1);
   ensure(key.find(L'\0') == std::wstring::npos, "API key contains NUL bytes");
-  const int operation = action == Action::Images     ? YILAI_ENHANCE
-                                                     : YILAI_CONFIGURE;
   char *error = nullptr;
   Buffer result(
-      yilai_apply_config(before.c_str(), utf8(key).c_str(), operation, &error),
+      yilai_configure_api(before.c_str(), utf8(key).c_str(), &error),
       yilai_config_free);
   Buffer detail(error, yilai_config_free);
   ensure(result != nullptr,
@@ -244,11 +217,6 @@ static std::wstring perform(Action action, const fs::path &root,
   const std::string after(result.get());
   ensure((fs::exists(config) ? read(config) : "") == before,
          "配置已被其他程序改动，请关闭后重试。");
-  if (action == Action::Images) {
-    atomic(config, after);
-    return L"生图已启用。";
-  }
-  log.step("read_auth", "检查登录文件");
   const auto authPath = root / L"auth.json";
   regular(authPath);
   const bool hadAuth = fs::exists(authPath);
@@ -329,35 +297,16 @@ static std::wstring perform(Action action, const fs::path &root,
       throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
     throw;
   }
-  if (historyReady) {
-    log.step("sync_history", "同步本地历史");
-    char *syncError = nullptr;
-    Buffer synced(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &syncError), yilai_config_free);
-    Buffer syncDetail(syncError, yilai_config_free);
-    if (!synced) {
-      historyWarning = true;
-      yilai_diagnostic_event(log.context, "history_warning", syncDetail ? syncDetail.get() : "历史同步未完成");
-    }
-  }
-  return historyWarning
-    ? L"API 已配置，生图已启用；历史同步未完成，请查看日志。请重开 Codex。"
-    : L"API 已配置，生图和本地历史已就绪。请重开 Codex。";
+  return L"API 已配置，生图已启用。请重新打开 Codex。";
 }
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed, const fs::path &runtimeOverride, bool *historyWarning) {
-  bool warning = false;
-  if (historyWarning) *historyWarning = false;
-  const char *name = action == Action::Configure  ? "switch_api"
-                     : action == Action::Cleanup  ? "reset_config"
-                     : action == Action::Undo     ? "undo_history"
-                     : action == Action::Sync     ? "sync_history"
-                                                  : "enhance_images";
+                 bool closed, const fs::path &runtimeOverride) {
+  const char *name = action == Action::Configure ? "configure_api" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   try {
-    auto result = perform(action, root, input, closed, log, runtimeOverride, warning);
-    if (historyWarning) *historyWarning = warning;
-    yilai_diagnostic_end(log.context, 1, warning ? "API configured; history incomplete" : "操作完成");
+    auto result = perform(action, root, input, closed, log, runtimeOverride);
+    yilai_diagnostic_end(log.context, 1, "操作完成");
     return result;
   } catch (const std::exception &error) {
     Buffer clean(yilai_diagnostic_sanitize(log.context, error.what()),
@@ -375,7 +324,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
 }
 bool selfTest(std::wstring &error) {
   try {
-    for (auto test : {yilai_config_self_test, yilai_history_self_test,
+    for (auto test : {yilai_config_self_test,
                       yilai_diagnostic_self_test}) {
       char *detail = nullptr;
       int ok = test(&detail);
@@ -398,20 +347,6 @@ bool selfTest(std::wstring &error) {
         fs::remove_all(p, ignored);
       }
     } cleanup{root};
-    wchar_t *previousEnv = nullptr;
-    size_t envLength = 0;
-    _wdupenv_s(&previousEnv, &envLength, L"CODEX_SQLITE_HOME");
-    const bool hadSqliteEnv = previousEnv != nullptr;
-    const std::wstring previousSqlite = previousEnv ? previousEnv : L"";
-    free(previousEnv);
-    _wputenv_s(L"CODEX_SQLITE_HOME", root.c_str());
-    struct RestoreEnv {
-      bool had;
-      std::wstring value;
-      ~RestoreEnv() {
-        _wputenv_s(L"CODEX_SQLITE_HOME", had ? value.c_str() : L"");
-      }
-    } restoreEnv{hadSqliteEnv, previousSqlite};
     const std::string config =
         "model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json='cc-"
         "switch-model-catalog.json'\n[model_providers.custom]\nname='Other'"
@@ -454,23 +389,13 @@ bool selfTest(std::wstring &error) {
     ensure(failed && read(root / L"config.toml") == config &&
                read(root / L"auth.json") == auth,
            "Auth deletion failure did not roll back configuration");
-    atomic(root / L"sessions/bad.jsonl", "invalid history\n");
-    bool warning = false;
-    auto partial = run(Action::Configure, root, L"sk-test", false, {}, &warning);
-    ensure(warning && mode(root) == L"易来 API" && !fs::exists(root / L"auth.json") && partial.find(L"历史同步未完成") != std::wstring::npos,
-           "History failure must preserve successful API configuration and report warning");
-    fs::remove(root / L"sessions/bad.jsonl");
-    atomic(root / L"sessions/example.jsonl",
-           "{\"type\":\"session_meta\",\"payload\":{\"id\":\"example\",\"model_"
-           "provider\":\"openai\"}}\n{\"type\":\"event_msg\",\"payload\":{"
-           "\"message\":\"keep\"}}\n");
+    const std::string history = "invalid history must remain unchanged\n";
+    atomic(root / L"sessions/example.jsonl", history);
+    atomic(root / L"state_5.sqlite", "opaque database sentinel");
+    atomic(root / L"yilai-history-backups/pending.json", "opaque pending sentinel");
     run(Action::Configure, root, L"sk-test", false);
-    ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"),
-           "API switch did not remove auth");
-    ensure(read(root / L"sessions/example.jsonl").find("custom") !=
-               std::string::npos,
-           "Switch did not synchronize history");
-    atomic(root / L"auth.json", auth);
+    ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"), "API configure did not remove auth");
+    ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"state_5.sqlite") == "opaque database sentinel" && read(root / L"yilai-history-backups/pending.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);
     atomic(root / L"auth.json", auth);

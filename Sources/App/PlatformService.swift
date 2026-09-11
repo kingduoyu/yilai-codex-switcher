@@ -1,12 +1,11 @@
 import Foundation
 import Darwin
 import ConfigRewrite
-import HistorySync
 import Diagnostics
 import OperationGuard
 import ConfigSources
 
-enum Operation: String, CaseIterable { case images, configure, sync, undo, cleanup }
+enum Operation: String, CaseIterable { case configure, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -39,7 +38,6 @@ private final class DiagnosticLog {
     func event(_ stage: String, _ message: String) {
         switch stage {
         case "acquire_lock": lastMainStage = "检查配置目录占用"
-        case "recover_history": lastMainStage = "恢复未完成的历史同步"
         case "checking_apps": lastMainStage = "检查后台程序"
         case "prepare_sources": lastMainStage = "识别配置来源"
         case "apply_sources": lastMainStage = "处理连接覆盖配置"
@@ -47,7 +45,6 @@ private final class DiagnosticLog {
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
         case "delete_auth": lastMainStage = "删除旧登录文件"
-        case "sync_history": lastMainStage = "同步本地历史"
         case "rename_config": lastMainStage = "停用旧配置"
         default: break
         }
@@ -78,7 +75,6 @@ private final class DiagnosticLog {
 final class PlatformService {
     let root: URL
     private let files = FileManager.default
-    private(set) var historyWarning = false
 
     init(root: URL? = nil) {
         let env = ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap {
@@ -181,37 +177,7 @@ final class PlatformService {
         guard linked == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 
-    private func recoverHistory() throws {
-        var failure: UnsafeMutablePointer<CChar>?
-        let output = root.path.withCString { yilai_recover_history($0, &failure) }
-        defer {
-            if let output { yilai_config_free(output) }
-            if let failure { yilai_config_free(failure) }
-        }
-        guard output != nil else {
-            throw AppError(message: failure.map { String(cString: $0) } ?? "恢复未完成的历史同步失败")
-        }
-    }
-
-    private func history(undo: Bool = false) throws -> String {
-        var failure: UnsafeMutablePointer<CChar>?
-        let output = root.path.withCString { yilai_sync_history($0, undo ? 1 : 0, &failure) }
-        defer {
-            if let output { yilai_config_free(output) }
-            if let failure { yilai_config_free(failure) }
-        }
-        guard let output else {
-            throw AppError(message: failure.map { String(cString: $0) } ?? "历史同步失败")
-        }
-        // The core has already committed when returning success. Display formatting
-        // must not throw and trigger a platform rollback after that commit.
-        let report = (try? JSONSerialization.jsonObject(with: Data(String(cString: output).utf8))) as? [String: Any]
-        let title = undo ? "已撤销上次同步" : "已同步本地历史"
-        return "\(title)：\(report?["files"] as? Int ?? 0) 个会话文件，\(report?["rows"] as? Int ?? 0) 条索引。"
-    }
-
     func run(_ operation: Operation, key: String = "", requireClosed: Bool = true, runtimeOverride: String = "") throws -> String {
-        historyWarning = false
         let log = DiagnosticLog(root: root, operation: operation, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
         do {
             log.event("acquire_lock", "Acquiring exclusive operation lock for this Codex home")
@@ -223,7 +189,7 @@ final class PlatformService {
             }
             defer { yilai_operation_unlock(lock) }
             let result = try runOperation(operation, key: key, requireClosed: requireClosed, runtimeOverride: runtimeOverride, log: log)
-            log.finish(success: true, message: historyWarning ? result : "Operation completed")
+            log.finish(success: true, message: "Operation completed")
             return result
         } catch {
             var message = log.failureMessage(operationErrorDescription(error))
@@ -238,21 +204,6 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
-        var historyIssue: String?
-        if operation == .configure {
-            log.event("recover_history", "Checking and recovering any interrupted history transaction")
-            do {
-                try recoverHistory()
-                log.event("recover_history", "Pending history recovery completed")
-            } catch {
-                historyIssue = log.sanitized(operationErrorDescription(error))
-                log.event("history_warning", "History recovery incomplete; preserving the pending transaction and continuing API setup: \(historyIssue!)")
-            }
-        }
-        if operation == .sync || operation == .undo {
-            log.event("sync_history", operation == .undo ? "Restoring local history classification" : "Synchronizing local history")
-            return try history(undo: operation == .undo)
-        }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
             guard let before = try snapshot(config) else { return "尚无配置，无需重置。" }
@@ -266,13 +217,12 @@ final class PlatformService {
         }
 
         log.event("prepare_config", "Validating configuration update")
-        if operation == .configure && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw AppError(message: "请先填写易来 API Key，再点击“切换到易来 API”。")
         }
         var sources: OpaquePointer?
         defer { if let sources { yilai_sources_finish(sources) } }
-        let switching = operation == .configure
-        if switching && (requireClosed || !runtimeOverride.isEmpty) {
+        if requireClosed || !runtimeOverride.isEmpty {
             log.event("prepare_sources", "Reading effective configuration layers using the installed runtime")
             var sourceError: UnsafeMutablePointer<CChar>?
             defer { if let sourceError { yilai_config_free(sourceError) } }
@@ -300,15 +250,9 @@ final class PlatformService {
         guard !before.utf8.contains(0), !token.utf8.contains(0) else {
             throw AppError(message: "配置或 Key 包含无效空字符。")
         }
-        let action: Int32
-        switch operation {
-        case .images: action = Int32(YILAI_ENHANCE)
-        case .configure: action = Int32(YILAI_CONFIGURE)
-        default: throw AppError(message: "不支持的配置操作。")
-        }
         var failure: UnsafeMutablePointer<CChar>?
         let output = before.withCString { text in
-            token.withCString { yilai_apply_config(text, $0, action, &failure) }
+            token.withCString { yilai_configure_api(text, $0, &failure) }
         }
         defer {
             if let output { yilai_config_free(output) }
@@ -318,7 +262,7 @@ final class PlatformService {
             throw AppError(message: failure.map { String(cString: $0) } ?? "配置更新失败")
         }
         let after = Data(String(cString: output).utf8)
-        let beforeAuth = switching ? try snapshot(auth) : nil
+        let beforeAuth = try snapshot(auth)
         guard try snapshot(config) == beforeConfig else {
             throw AppError(message: "配置已被其他程序改动，请关闭后重试。")
         }
@@ -338,25 +282,23 @@ final class PlatformService {
             log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
-            if switching {
-                log.event("delete_auth", "Removing only auth.json when present")
-                guard try snapshot(auth) == beforeAuth else {
-                    throw AppError(message: "登录文件已被其他程序改动，请关闭后重试。")
+            log.event("delete_auth", "Removing only auth.json when present")
+            guard try snapshot(auth) == beforeAuth else {
+                throw AppError(message: "登录文件已被其他程序改动，请关闭后重试。")
+            }
+            if beforeAuth != nil {
+                try files.removeItem(at: auth)
+                authRemoved = true
+            }
+            if let sources {
+                log.event("verify_sources", "Verifying the effective provider and authentication")
+                var sourceError: UnsafeMutablePointer<CChar>?
+                defer { if let sourceError { yilai_config_free(sourceError) } }
+                let verified = token.withCString {
+                    yilai_sources_verify(sources, $0, &sourceError)
                 }
-                if beforeAuth != nil {
-                    try files.removeItem(at: auth)
-                    authRemoved = true
-                }
-                if let sources {
-                    log.event("verify_sources", "Verifying the effective provider and authentication before history sync")
-                    var sourceError: UnsafeMutablePointer<CChar>?
-                    defer { if let sourceError { yilai_config_free(sourceError) } }
-                    let verified = token.withCString {
-                        yilai_sources_verify(sources, $0, &sourceError)
-                    }
-                    guard verified != 0 else {
-                        throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
-                    }
+                guard verified != 0 else {
+                    throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
                 }
             }
         } catch {
@@ -404,29 +346,12 @@ final class PlatformService {
             }
             throw error
         }
-        // API configuration is committed after authentication/source verification.
-        // History is independent: its failure must never revert a working connection.
-        if operation == .configure {
-            if historyIssue == nil {
-                log.event("sync_history", "Synchronizing local history")
-                do { _ = try history() }
-                catch {
-                    historyIssue = log.sanitized(operationErrorDescription(error))
-                    log.event("history_warning", "API configuration remains active: \(historyIssue!)")
-                }
-            }
-            if let historyIssue {
-                historyWarning = true
-                return "API 已配置，历史同步未完成：\(historyIssue)。生图已启用，可重新打开 Codex；请查看日志排查历史问题。"
-            }
-            return "已切换到易来 API，生图和本地历史已就绪。请重新打开 Codex。"
-        }
-        return operation == .images ? "生图已启用。请重新打开 Codex。" : "操作完成。"
+        return "已切换到易来 API，生图已启用。请重新打开 Codex。"
     }
 }
 
 func selfTest() throws {
-    for test in [yilai_config_self_test, yilai_history_self_test, yilai_diagnostic_self_test] {
+    for test in [yilai_config_self_test, yilai_diagnostic_self_test] {
         var error: UnsafeMutablePointer<CChar>?
         let ok = test(&error)
         let detail = error.map { String(cString: $0) } ?? "Core test failed"
@@ -436,13 +361,7 @@ func selfTest() throws {
     let files = FileManager.default
     let root = files.temporaryDirectory.appendingPathComponent("YilaiCodexSwitcher-swift-\(UUID().uuidString)", isDirectory: true)
     try files.createDirectory(at: root, withIntermediateDirectories: true)
-    let oldSQLiteHome = ProcessInfo.processInfo.environment["CODEX_SQLITE_HOME"]
-    setenv("CODEX_SQLITE_HOME", root.path, 1)
-    defer {
-        if let oldSQLiteHome { setenv("CODEX_SQLITE_HOME", oldSQLiteHome, 1) }
-        else { unsetenv("CODEX_SQLITE_HOME") }
-        try? files.removeItem(at: root)
-    }
+    defer { try? files.removeItem(at: root) }
     func put(_ name: String, _ value: String) throws {
         let url = root.appendingPathComponent(name)
         try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -454,13 +373,27 @@ func selfTest() throws {
     func check(_ value: Bool, _ message: String) throws {
         if !value { throw AppError(message: message) }
     }
-    func record(_ id: String, _ provider: String) -> String {
-        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"model_provider\":\"\(provider)\"}}\n"
+    // Historical data is opaque to this application, including malformed files.
+    let untouchedFiles: [String: Data] = [
+        "sessions/active.jsonl": Data("{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"yilai\"}}\n".utf8),
+        "sessions/broken.jsonl": Data("invalid json\n".utf8),
+        "archived_sessions/old.jsonl": Data("archived opaque bytes\n".utf8),
+        "state_5.sqlite": Data([0, 255, 42, 7, 0, 19]),
+        "state_5.sqlite-wal": Data([11, 128, 0, 15]),
+        "state_5.sqlite-shm": Data([27, 0, 129]),
+        "session_index.jsonl": Data("invalid index\n".utf8),
+        "history.jsonl": Data("opaque command history\n".utf8),
+        "yilai-history-backups/pending.json": Data("invalid pending journal\n".utf8)
+    ]
+    for (name, data) in untouchedFiles {
+        let url = root.appendingPathComponent(name)
+        try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
     }
-    func provider(_ name: String) throws -> String {
-        let bytes = Data(try text(name).split(separator: "\n")[0].utf8)
-        let row = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
-        return (row?["payload"] as? [String: Any])?["model_provider"] as? String ?? ""
+    func checkUntouchedFiles() throws {
+        for (name, data) in untouchedFiles {
+            try check(try Data(contentsOf: root.appendingPathComponent(name)) == data, "Unrelated file changed: \(name)")
+        }
     }
     let config = "model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json='cc-switch-model-catalog.json'\n[model_providers.custom]\nname='Other'\nbase_url='https://other.invalid'\nwire_api='responses'\n"
     let auth = "{\"auth_mode\":\"chatgpt\"}"
@@ -500,13 +433,6 @@ func selfTest() throws {
             try check(try text("config.toml") == config && text("auth.json") == auth, "Concurrent operation changed configuration or auth")
         }
     }
-    // The next operation also verifies release of the held lock.
-    _ = try service.run(.images, requireClosed: false)
-    try check(try text("auth.json") == auth, "Enhancement cleared auth")
-    let enhanced = try text("config.toml")
-    _ = try service.run(.images, requireClosed: false)
-    try check(try text("config.toml") == enhanced, "Enhancement not idempotent")
-
     // Exercise native POSIX spawning and the three-message handshake with a local
     // shell stub. This validates transport, not a real macOS Codex runtime.
     do {
@@ -564,7 +490,7 @@ func selfTest() throws {
         guard sourcePlan != nil else {
             throw AppError(message: sourceError.map { String(cString: $0) } ?? "POSIX runtime probe stub failed")
         }
-        try check(try text("config.toml") == enhanced && text("auth.json") == auth, "Read-only source probing changed config/auth")
+        try check(try text("config.toml") == config && text("auth.json") == auth, "Read-only source probing changed config/auth")
     }
 
     // A supplied test runtime enables source probing even with process checks skipped.
@@ -575,11 +501,9 @@ func selfTest() throws {
                             runtimeOverride: root.appendingPathComponent("missing-codex-runtime").path)
     } catch { missingRuntimeError = error.localizedDescription }
     try check(missingRuntimeError.contains("识别配置来源"), "Explicit test runtime did not enable source verification")
-    try check(try text("config.toml") == enhanced && text("auth.json") == auth, "Source preparation failure changed config/auth")
+    try check(try text("config.toml") == config && text("auth.json") == auth, "Source preparation failure changed config/auth")
 
     // An immutable auth file must fail the switch without changing config/history.
-    let session = record("active", "openai")
-    try put("sessions/active.jsonl", session)
     let authPath = root.appendingPathComponent("auth.json").path
     guard chflags(authPath, UInt32(UF_IMMUTABLE)) == 0 else {
         throw AppError(message: "Cannot lock synthetic auth file")
@@ -589,54 +513,36 @@ func selfTest() throws {
     do { _ = try service.run(.configure, key: "sk-test-key", requireClosed: false) }
     catch { failed = true }
     _ = chflags(authPath, 0)
-    try check(try failed && text("config.toml") == enhanced && text("auth.json") == auth, "Locked auth switch rollback failed")
-    try check(try text("sessions/active.jsonl") == session, "Locked auth changed history")
+    try check(try failed && text("config.toml") == config && text("auth.json") == auth, "Locked auth switch rollback failed")
+    try checkUntouchedFiles()
 
-    // History validation fails after API setup commits; the connection stays active.
-    try put("sessions/broken.jsonl", "invalid json\n")
-    let historyWarning = try service.run(.configure, key: "sk-test-key", requireClosed: false)
-    try check(service.historyWarning && historyWarning.contains("API 已配置，历史同步未完成"), "History failure was not reported as a warning")
-    try check(service.mode() == "易来 API" && !files.fileExists(atPath: authPath), "History failure reverted the API connection")
-    try check(try text("config.toml").contains("image_generation = true"), "History warning lost image support")
-    try check(try text("sessions/active.jsonl") == session, "Sync validation failure altered history")
-    try files.removeItem(at: root.appendingPathComponent("sessions/broken.jsonl"))
-
-    // A broken pending-history journal cannot block API setup or be overwritten.
-    try put("config.toml", enhanced)
-    try put("auth.json", auth)
-    try put("yilai-history-backups/pending.json", "invalid pending journal\n")
-    let recoveryWarning = try service.run(.configure, key: "sk-test-key", requireClosed: false)
-    try check(service.historyWarning && recoveryWarning.contains("API 已配置，历史同步未完成"), "History recovery failure blocked API setup")
-    try check(service.mode() == "易来 API" && !files.fileExists(atPath: authPath), "History recovery failure reverted the API connection")
-    try check(try text("yilai-history-backups/pending.json") == "invalid pending journal\n" && text("sessions/active.jsonl") == session, "Failed recovery was overwritten by fresh history sync")
-    try files.removeItem(at: root.appendingPathComponent("yilai-history-backups/pending.json"))
-    try put("archived_sessions/local.jsonl", record("archived", "openai"))
+    // Configuration succeeds even with opaque or malformed history/database files.
+    // This also verifies that a failed operation released its exclusive lock.
     _ = try service.run(.configure, key: "sk-test-key", requireClosed: false)
-    try check(!service.historyWarning, "Completed history sync retained an old warning")
     try check(service.mode() == "易来 API", "API switch did not select Yilai")
     try check(!files.fileExists(atPath: authPath), "API switch retained auth")
-    try check(try provider("sessions/active.jsonl") == "custom", "API switch did not sync history")
-    try check(try text("config.toml").contains("image_generation = true"), "API switch did not enable images")
-    try check(try provider("archived_sessions/local.jsonl") == "custom", "API switch did not sync archived history")
+    let configured = try text("config.toml")
+    try check(configured.contains("image_generation = true"), "API switch did not enable images")
+    try check(configured.contains("gpt-6-astra") && configured.contains("cc-switch-model-catalog.json"), "API switch changed the model or catalog")
+    try checkUntouchedFiles()
+    _ = try service.run(.configure, key: "sk-test-key", requireClosed: false)
+    try check(try text("config.toml") == configured, "API configuration is not idempotent")
+    try checkUntouchedFiles()
     try check(try text("auth.json.yilai-disabled") == "keep disabled auth" && text("auth.json.yilai-session-test") == "keep session auth" && text("yilai-switcher-backup/manifest.json") == "keep manifest", "Switch touched unrelated backups")
 
     // Reset is a reversible rename; it must preserve config bytes, auth and history.
     try put("auth.json", auth)
     let beforeReset = try text("config.toml")
-    let beforeHistory = try text("sessions/active.jsonl")
-    // Even a recoverable pending transaction belongs to a main switch, not reset.
-    let pendingHistory = try text("yilai-history-backups/latest.json")
-    try put("yilai-history-backups/pending.json", pendingHistory)
     _ = try service.run(.cleanup, requireClosed: false)
     try check(!files.fileExists(atPath: root.appendingPathComponent("config.toml").path), "Reset retained active config")
     let renamed = try files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("config.toml.disabled-") }
     try check(renamed.count == 1, "Reset did not create exactly one disabled config")
     try check(try String(contentsOf: renamed[0], encoding: .utf8) == beforeReset, "Reset changed saved config bytes")
-    try check(try text("auth.json") == auth && text("sessions/active.jsonl") == beforeHistory, "Reset changed auth/history")
+    try check(try text("auth.json") == auth, "Reset changed auth")
+    try checkUntouchedFiles()
     _ = try service.run(.cleanup, requireClosed: false)
     try check(try text("auth.json") == auth, "Empty reset changed auth")
-    try check(try text("yilai-history-backups/pending.json") == pendingHistory, "Reset changed a pending history marker")
-    try files.removeItem(at: root.appendingPathComponent("yilai-history-backups/pending.json"))
+    try checkUntouchedFiles()
 
     // Malformed input may appear in a parser error: both UI and logs must redact it.
     let malformed = "experimental_bearer_token = 'sk-test-key\n"
@@ -646,6 +552,7 @@ func selfTest() throws {
     catch { safeError = error.localizedDescription }
     try check(!safeError.isEmpty && !safeError.contains("sk-test-key"), "Displayed error leaked API key")
     try check(try text("config.toml") == malformed && text("auth.json") == auth, "Invalid config changed state")
+    try checkUntouchedFiles()
 
     // Logging is best-effort even if its directory name is occupied by a file.
     let noLogRoot = root.appendingPathComponent("no-log", isDirectory: true)
@@ -662,6 +569,6 @@ func selfTest() throws {
         .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
     try check(!logFiles.isEmpty, "Operation diagnostics were not created")
     let logText = try logFiles.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
-    try check(logText.contains("rollback_config") && logText.contains("failure") && logText.contains("history_warning"), "Failure/rollback diagnostics missing")
+    try check(logText.contains("rollback_config") && logText.contains("failure"), "Failure/rollback diagnostics missing")
     try check(!logText.contains("sk-test-key"), "Diagnostics leaked the API key")
 }

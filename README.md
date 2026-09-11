@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.5
+# 易来 Codex 配置器 v3.3.6
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。官方连接切换交给 CCS，本工具不提供切回官方或恢复旧配置的入口。
 
@@ -21,17 +21,19 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 ## 本地历史与日志
 
-CCS 已统一为 custom 的本地历史会保持该归属，我们配置 API 不会关闭 CCS 的历史统一开关。CCS 的迁移完成标记保存在它自己的设置中；不能把开关理解为永久自动迁移所有以后产生的其他归属记录。
+本版不读取、同步、迁移或恢复历史，不改写历史数据库。CCS 的历史统一开关保持原样。配置来源探测使用临时数据库目录。
 
-API 配置后尝试同步已有本地 sessions、archived_sessions 和 state_5.sqlite，保留正文、标题、归档状态及分叉历史。支持 sqlite_home / CODEX_SQLITE_HOME。历史同步失败或旧历史恢复未完成时，保留已成功的 API 配置并显示警告和日志入口，不把历史问题当作连接失败；未完成的历史事务与备份保留供后续处理。
+日志在 CODEX_HOME/yilai-switcher-logs，记录配置阶段、错误和回滚，不写密钥或对话正文。重置只改名停用 config.toml。
 
-日志在 CODEX_HOME/yilai-switcher-logs，记录阶段、成功、失败、警告和回滚，不写密钥、配置全文或对话正文。RPC 拒绝显示安全分类、错误码、运行时路径和上下文。日志不采集后续聊天请求，不验证额度和服务器模型权限。
+## CCS 使用顺序
 
-历史备份在 yilai-history-backups，来源备份在 yilai-source-backups。这些用于操作恢复，与重置后停用的配置文件无关；停用配置不会被重新启用。只处理已有本地历史，不下载其他账号云端记录。
+先在 CCS 选择 API 供应商，再退出 CCS 和 Codex，运行本配置器。不要在 CCS 仍选中官方时用外部工具改写连接：CCS 后续可能把磁盘配置回存到当前官方条目。本版没有修复 CCS 回存状态冲突，也不修改其数据库。
+
+模型选择和现有目录指向原样保留，包括旧版 yilai-model-catalog.json；不删除旧指向，不获取或生成新目录。新安装用户需要已有模型目录或使用运行时默认列表。
 
 ## 开发与验证
 
-共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；历史：Sources/HistorySync；操作锁：Sources/OperationGuard；日志：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
+共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；操作锁：Sources/OperationGuard；日志：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 
@@ -39,4 +41,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-版本事实见 releases/v3.3.5/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.6/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。

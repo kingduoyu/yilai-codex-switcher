@@ -24,7 +24,6 @@ bool busy = false, showKey = false, failed = false;
 std::wstring modeText, statusText = L"准备就绪。填写 Key，即可配置 API 和生图。";
 struct Result {
   bool ok;
-  bool warning = false;
   std::wstring message;
   int operation;
 };
@@ -153,7 +152,7 @@ void begin(HWND window, int id) {
   busy = true;
   failed = false;
   statusText =
-      id == Reset ? L"正在停用旧配置…" : L"正在配置连接并同步本地历史，请稍候…";
+      id == Reset ? L"正在停用旧配置…" : L"正在配置 API 和生图，请稍候…";
   for (int child : {Api, Reset, Eye, Logs})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
@@ -162,7 +161,7 @@ void begin(HWND window, int id) {
     auto result = std::make_unique<Result>();
     result->operation = id;
     try {
-      result->message = app::run(action, app::home(), key, true, {}, &result->warning);
+      result->message = app::run(action, app::home(), key);
       result->ok = true;
     } catch (const std::exception &error) {
       result->ok = false;
@@ -242,7 +241,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     busy = false;
     failed = !result->ok;
     statusText = result->message;
-    ShowWindow(GetDlgItem(window, Logs), (failed || result->warning) ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(window, Logs), failed ? SW_SHOW : SW_HIDE);
     for (int id : {Api, Reset, Eye, Logs})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(keyBox, TRUE);
@@ -370,7 +369,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 520};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.5", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.6", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);

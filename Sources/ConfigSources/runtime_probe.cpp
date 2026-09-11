@@ -1,6 +1,7 @@
 #include "runtime_probe.h"
-#include "../HistorySync/vendor/json.hpp"
+#include "../Shared/vendor/json.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <stdexcept>
@@ -35,6 +36,29 @@ bool regular(const fs::path &path) {
   return fs::is_regular_file(path, error);
 }
 std::string utf8(const fs::path &path) { return path.u8string(); }
+// config/read starts an app server; isolate its databases from local history.
+struct ProbeStorage {
+  fs::path parent, path;
+  ProbeStorage() {
+    static std::atomic<unsigned long long> sequence{0};
+    parent=fs::weakly_canonical(fs::temp_directory_path());
+    for(int attempt=0;attempt<20;++attempt) {
+      path=parent/("yilai-config-probe-"+std::to_string(Clock::now().time_since_epoch().count())+"-"+std::to_string(sequence++));
+      if(fs::create_directory(path)) {
+#ifndef _WIN32
+        fs::permissions(path,fs::perms::owner_all,fs::perm_options::replace);
+#endif
+        return;
+      }
+    }
+    fail("temporary probe storage unavailable");
+  }
+  ~ProbeStorage() {
+    std::error_code error;
+    if(path.parent_path()==parent && path.filename().string().rfind("yilai-config-probe-",0)==0 && !fs::is_symlink(fs::symlink_status(path,error)))
+      fs::remove_all(path,error);
+  }
+};
 #ifdef _WIN32
 std::wstring environment(const wchar_t *name) {
   auto count = GetEnvironmentVariableW(name, nullptr, 0);
@@ -67,7 +91,7 @@ struct Child {
     if (process) { TerminateProcess(process, 1); WaitForSingleObject(process, 2000); CloseHandle(process); }
     for (auto handle : {input, output, errors}) if (handle) CloseHandle(handle);
   }
-  void launch(const fs::path &runtime, const fs::path &home) {
+  void launch(const fs::path &runtime, const fs::path &home, const fs::path &sqliteHome) {
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
     HANDLE childInput = nullptr, childOutput = nullptr, childErrors = nullptr;
     struct Ends {
@@ -107,7 +131,7 @@ struct Child {
     }
     FreeEnvironmentStringsW(block);
     variables.push_back(L"CODEX_HOME=" + home.wstring());
-    variables.push_back(L"CODEX_SQLITE_HOME=" + home.wstring());
+    variables.push_back(L"CODEX_SQLITE_HOME=" + sqliteHome.wstring());
     std::sort(variables.begin(), variables.end(), [](const auto &a, const auto &b){return _wcsicmp(a.c_str(),b.c_str()) < 0;});
     std::vector<wchar_t> environmentBlock;
     for (const auto &item : variables) { environmentBlock.insert(environmentBlock.end(), item.begin(), item.end()); environmentBlock.push_back(0); }
@@ -159,7 +183,7 @@ struct Child {
     if (pid > 0) { kill(-pid, SIGKILL); kill(pid, SIGKILL); while(waitpid(pid,nullptr,0)<0 && errno==EINTR){} }
     for (int descriptor : {input,output,errors}) if(descriptor>=0) close(descriptor);
   }
-  void launch(const fs::path &runtime, const fs::path &home) {
+  void launch(const fs::path &runtime, const fs::path &home, const fs::path &sqliteHome) {
     int in[2]{-1,-1}, out[2]{-1,-1}, err[2]{-1,-1};
     struct Ends { int *a,*b,*c; ~Ends(){for(auto pair:{a,b,c})for(int i=0;i<2;++i)if(pair[i]>=0)close(pair[i]);} } ends{in,out,err};
     if(pipe(in)||pipe(out)||pipe(err))fail("pipe creation failed");
@@ -181,7 +205,7 @@ struct Child {
     std::vector<std::string> variables;
     for(char **item=environ;item && *item;++item)
       if(strncmp(*item,"CODEX_HOME=",11) && strncmp(*item,"CODEX_SQLITE_HOME=",18))variables.emplace_back(*item);
-    variables.emplace_back("CODEX_HOME="+utf8(home)); variables.emplace_back("CODEX_SQLITE_HOME="+utf8(home));
+    variables.emplace_back("CODEX_HOME="+utf8(home)); variables.emplace_back("CODEX_SQLITE_HOME="+utf8(sqliteHome));
     std::vector<char*> env;
     for(auto &item:variables)env.push_back(item.data());env.push_back(nullptr);
     std::string executable=utf8(runtime), argument="app-server";
@@ -281,8 +305,9 @@ std::string probe_config(const std::filesystem::path &runtime,
   if(!runtime.is_absolute() || !home.is_absolute() || !cwd.is_absolute())fail("absolute paths required");
   if(!regular(runtime))fail("runtime unavailable");
   const auto deadline=Clock::now()+std::chrono::seconds(20);
-  Child child;child.launch(runtime,home);
-  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.5"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
+  ProbeStorage storage;
+  Child child;child.launch(runtime,home,storage.path);
+  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.6"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
   bool initialized=false;
   std::string pending;
   size_t received=0;

@@ -83,10 +83,12 @@ try:
     (home/'sessions').mkdir();(home/'sessions/broken.jsonl').write_text('malformed-history',encoding='utf8')
     completed,logs=run(home)
     assert source.read_bytes()!=before and (home/'config.toml').read_bytes()!=config and not (home/'auth.json').exists()
-    assert 'verify_sources' in logs and 'history_warning' in logs and 'rollback_sources' not in logs
+    assert 'verify_sources' in logs and 'history_warning' not in logs and 'rollback_sources' not in logs
     assert (home/'sessions/broken.jsonl').read_text(encoding='utf8')=='malformed-history'
+    assert not (home/'yilai-history-backups').exists()
+    assert not list(home.glob('*.sqlite*')), 'Configuration probe created databases in the target home'
     assert not (home/'yilai-source-backups/pending.json').exists()
-    facts.append('history warning preserves verified API configuration, commits source edits and retains broken history unchanged')
+    facts.append('API configuration ignores malformed history and commits source edits without history operations')
 
     home,source,current=setup('invalid-project')
     source.write_text('[invalid TOML',encoding='utf8')

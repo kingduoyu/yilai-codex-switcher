@@ -1,5 +1,5 @@
 #include "../Sources/ConfigSources/runtime_probe.h"
-#include "../Sources/HistorySync/vendor/json.hpp"
+#include "../Sources/Shared/vendor/json.hpp"
 #include <filesystem>
 #include <iostream>
 int wmain(int argc,wchar_t **argv) {

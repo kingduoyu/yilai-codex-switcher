@@ -1,7 +1,7 @@
 #include "ConfigSources.h"
 #include "ConfigRewrite.h"
 #include "runtime_probe.h"
-#include "../HistorySync/vendor/json.hpp"
+#include "../Shared/vendor/json.hpp"
 #include "../ConfigRewrite/vendor/toml.hpp"
 #include <algorithm>
 #include <atomic>
