@@ -90,7 +90,17 @@ try{
   assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),credential);
  }
  assert.equal(requests.filter(x=>x.url.endsWith('/responses')).at(-1).headers.authorization,'Bearer sk-isolated-test-only');
- facts.passed=['one-click API config deletes auth and automatically syncs legacy history','account/read confirms no official login required after auth deletion','one-click official switch automatically syncs history','official alias preserves visible local history across credential changes','native image_gen.imagegen advertised','internal image-only operation preserves model/catalog/auth','enhance idempotent','native model/list gpt-6-astra','real thread written by app-server','legacy provider sync preserves content','native list/read/resume after sync','new message retained by undo','custom image header reaches local mock'];facts.requestTools=requests.filter(x=>x.url.endsWith('/responses')).map(x=>(x.body.tools??[]).map(t=>t.name??t.type));facts.status='passed';
+ const configBeforeFailure=await readFile(path.join(home,'config.toml'),'utf8');
+ const authBeforeFailure=await readFile(path.join(home,'auth.json'),'utf8');
+ const privateFragment='PRIVATE-HISTORY-MUST-NOT-APPEAR';
+ await writeFile(path.join(home,'sessions','malformed-diagnostics.jsonl'),'{"type":"session_meta","payload":{"id":"bad","message":"'+privateFragment+'"}, broken}\n');
+ const failedSwitch=spawnSync(driver,['configure',home],{encoding:'utf8',windowsHide:true,env:{...process.env,CODEX_HOME:home,CODEX_SQLITE_HOME:home}});
+ assert.notEqual(failedSwitch.status,0);assert(!failedSwitch.stderr.includes(privateFragment));assert(!failedSwitch.stderr.includes('sk-isolated-test-only'));
+ assert.equal(await readFile(path.join(home,'config.toml'),'utf8'),configBeforeFailure);assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),authBeforeFailure);
+ const logDirectory=path.join(home,'yilai-switcher-logs');const logText=(await Promise.all((await readdir(logDirectory)).map(n=>readFile(path.join(logDirectory,n),'utf8')))).join('\n');
+ for(const secret of [privateFragment,'sk-isolated-test-only','sk-synthetic-second','sk-fake-file-credential']) assert(!logText.includes(secret),'Diagnostic leak: '+secret);
+ assert(logText.includes('sync_history')&&logText.includes('rollback_config')&&logText.includes('failure'));
+ facts.passed=['failed automatic sync records stage and rollback without leaking credentials/history','one-click API config deletes auth and automatically syncs legacy history','account/read confirms no official login required after auth deletion','one-click official switch automatically syncs history','official alias preserves visible local history across credential changes','native image_gen.imagegen advertised','internal image-only operation preserves model/catalog/auth','enhance idempotent','native model/list gpt-6-astra','real thread written by app-server','legacy provider sync preserves content','native list/read/resume after sync','new message retained by undo','custom image header reaches local mock'];facts.requestTools=requests.filter(x=>x.url.endsWith('/responses')).map(x=>(x.body.tools??[]).map(t=>t.name??t.type));facts.status='passed';
  await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr,notifications:server?.notifications,requests},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}
