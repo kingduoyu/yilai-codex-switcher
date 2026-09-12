@@ -1,6 +1,6 @@
 # v3.3.11 Release Manifest
 
-Status: Windows and macOS builds and release regressions verified; draft asset verification and publication are pending.
+Status: published as the latest GitHub release after Windows/macOS build verification and downloaded-asset round-trip checks.
 
 Application source: 1bafbf134a5736f72ce5f6e414a1e5e44a5718e8. The following README and release-record commits do not change application or build inputs.
 
@@ -23,4 +23,4 @@ Limits: no production official OAuth send, paid image generation or physical Int
 | YilaiCodexSwitcher-macOS-universal.dmg | 6179992 | e133315a2a0f3b95f2c09b273df265af8e3279d3610d5ac78e4d43b9e66b8703 |
 | YilaiCodexSwitcher-macOS-universal.zip | 5432521 | ed1f5558b906279819ee7e12ec4ed6b0e12ed593f5304d54622d1e165383c16a |
 
-Publication: pending. Upload all six packages and `SHA256SUMS.txt` to a draft, download and verify every uploaded asset, then publish as latest and verify the three stable `latest/download` URLs. Final copies belong in the parent `publish/win-x64` and `publish/mac-universal` directories; older files are retained.
+Publication: GitHub release database ID 387665453 was published at 2026-09-12T18:33:47Z as `v3.3.11` and selected as latest. All seven draft assets were downloaded into a separate directory and matched the local source files by name, size and SHA-256 before publication. The stable Windows EXE, macOS DMG and macOS ZIP `releases/latest/download` URLs then returned HTTP 200 with 5297664, 6179992 and 5432521 bytes respectively. The annotated tag remains at 0b6720b77174cab91bfa483f9cdffbaab9b98bf0; this publication-record commit does not move it. Final copies are retained in the parent `publish/win-x64` and `publish/mac-universal` directories without removing older versions.
