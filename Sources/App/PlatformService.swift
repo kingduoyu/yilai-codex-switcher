@@ -208,7 +208,7 @@ final class PlatformService {
             log.event("official_config", "Switching to the built-in OpenAI connection")
             let before = try snapshot(config)
             var failure: UnsafeMutablePointer<CChar>?
-            let output = configURL.path.withCString { _ in
+            let output = config.path.withCString { _ in
                 (before.flatMap { String(data: $0, encoding: .utf8) } ?? "").withCString { yilai_configure_official($0, &failure) }
             }
             defer { if let failure { yilai_config_free(failure) } }
@@ -612,3 +612,4 @@ func selfTest() throws {
     try check(logText.contains("rollback_config") && logText.contains("failure"), "Failure/rollback diagnostics missing")
     try check(!logText.contains("sk-test-key"), "Diagnostics leaked the API key")
 }
+
