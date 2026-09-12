@@ -189,16 +189,42 @@ static std::wstring perform(Action action, const fs::path &root,
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
     regular(config);
-    const auto before = fs::exists(config) ? read(config) : "";
+    const bool hadConfig = fs::exists(config);
+    const auto before = hadConfig ? read(config) : "";
+    ensure(before.find('\0') == std::string::npos,
+           "Configuration contains NUL bytes");
     char *error = nullptr;
     Buffer output(yilai_configure_official(before.c_str(), &error), yilai_config_free);
     Buffer detail(error, yilai_config_free);
     ensure(output != nullptr, detail ? detail.get() : "官方配置失败");
-    const bool existed = fs::exists(config);
-    atomic(config, output.get());
+    const std::string after(output.get());
+    log.step("write_config", "写入连接配置");
+    ensure(fs::exists(config) == hadConfig && (hadConfig ? read(config) : "") == before,
+           "配置已被其他程序改动，请关闭后重试。");
+    atomic(config, after);
     try { unifyHistory(); }
     catch (...) {
-      if (existed) atomic(config, before); else fs::remove(config);
+      const auto failedStage = log.stage, failedLabel = log.label;
+      std::string originalError = "未知错误";
+      try { throw; } catch (const std::exception &e) { originalError = e.what(); } catch (...) {}
+      yilai_diagnostic_event(log.context, "switch_failed", originalError.c_str());
+      bool restored = true;
+      log.step("rollback_config", "还原连接配置");
+      try {
+        ensure(fs::exists(config) && read(config) == after,
+               "配置已被外部修改，未覆盖外部改动。");
+        if (hadConfig)
+          atomic(config, before);
+        else
+          fs::remove(config);
+        yilai_diagnostic_event(log.context, "rollback_config", "还原完成");
+      } catch (const std::exception &e) {
+        restored = false;
+        yilai_diagnostic_event(log.context, "rollback_config", e.what());
+      }
+      log.step(failedStage.c_str(), failedLabel.c_str());
+      if (!restored)
+        throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
       throw;
     }
     return L"已切换到官方，本地历史已统一。请重新打开 Codex。";
@@ -459,6 +485,47 @@ bool selfTest(std::wstring &error) {
     ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"), "API configure did not remove auth");
     ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"unrelated.sqlite") == "opaque database sentinel" && read(root / L"unused-history-marker.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
     ensure(read(root / L"yilai-model-catalog.json") == yilai_model_catalog(), "Managed catalog not written");
+    atomic(root / L"auth.json", auth);
+    run(Action::Official, root, L"", false);
+    ensure(mode(root) == L"OpenAI 官方" && read(root / L"auth.json") == auth,
+           "Official switch did not preserve existing auth");
+    ensure(read(root / L"sessions/example.jsonl") == history,
+           "Official switch changed unrelated history");
+
+    const std::string withNul = config + '\0' + "\n[mcp_servers.preserved]\ncommand='echo'\n";
+    atomic(root / L"config.toml", withNul);
+    bool nulRejected = false;
+    try { run(Action::Official, root, L"", false); }
+    catch (const std::exception &e) {
+      nulRejected = std::string(e.what()).find("NUL bytes") != std::string::npos;
+    }
+    ensure(nulRejected && read(root / L"config.toml") == withNul &&
+               read(root / L"auth.json") == auth,
+           "Official switch did not reject NUL configuration without changes");
+
+    for (bool hadConfig : {true, false}) {
+      if (hadConfig) atomic(root / L"config.toml", config);
+      else fs::remove(root / L"config.toml");
+      bool injected = false, sawOfficial = false, historyFailed = false;
+      try {
+        run(Action::Official, root, L"", false, {}, [&](const std::wstring &stage) {
+          // Fail once at the history boundary, after the official config write.
+          if (stage == L"修复旧易来对话归属" && !injected) {
+            injected = true;
+            sawOfficial = mode(root) == L"OpenAI 官方";
+            throw std::runtime_error("Injected official history failure");
+          }
+        });
+      } catch (const std::exception &e) {
+        historyFailed = std::string(e.what()).find("Injected official history failure") != std::string::npos;
+      }
+      ensure(injected && sawOfficial && historyFailed &&
+                 fs::exists(root / L"config.toml") == hadConfig &&
+                 (!hadConfig || read(root / L"config.toml") == config) &&
+                 read(root / L"auth.json") == auth &&
+                 read(root / L"sessions/example.jsonl") == history,
+             "Official history failure did not restore the original configuration state");
+    }
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);
     atomic(root / L"auth.json", auth);

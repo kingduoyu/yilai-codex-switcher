@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.9
+# 易来 Codex 配置器 v3.3.10
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，切换时自动修复旧易来对话归属，无需额外按钮。
 
@@ -17,6 +17,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 - 写入内置的 sol、terra、astra 三个模型和模型目录指向；保留已有合法模型选择，否则默认 sol。保留推理档位、MCP、权限等无关配置。
 - 主按钮只执行本地配置写入，不启动 Codex、不检查跨文件优先级、不做运行时回读。写入错误保留日志并恢复本次改动。
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
+- 官方切换拒绝含 NUL 的异常配置；写入与回滚前检查文件状态，检测到外部修改时不覆盖。其他 profile 引用的原连接保留，当前 custom/yilai 官方别名不带第三方凭据。
 
 ## 旧易来对话与日志
 
@@ -42,4 +43,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-版本事实见 releases/v3.3.9/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.10/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。

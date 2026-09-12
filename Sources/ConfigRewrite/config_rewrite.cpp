@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 toml::table &table_at(toml::table &parent, const char *key) {
@@ -218,6 +219,40 @@ toml::table configure(const char *text, const char *key) {
   return root;
 }
 
+toml::table configure_official(const char *text) {
+  auto root = toml::parse(text);
+  const toml::table provider{{"name", "OpenAI"},
+                             {"requires_openai_auth", true},
+                             {"wire_api", "responses"},
+                             {"supports_websockets", true}};
+  install_custom(root, provider);
+  auto &providers = table_at(root, "model_providers");
+  auto *profile = active_profile(root);
+  auto *previous = providers["yilai"].as_table();
+  std::vector<toml::table *> legacy_references;
+  if (profile && root["model_provider"] == "yilai")
+    legacy_references.push_back(&root);
+  if (auto *profiles = root["profiles"].as_table())
+    for (auto &[name, node] : *profiles) {
+      auto *other = node.as_table();
+      if (other && other != profile && (*other)["model_provider"] == "yilai")
+        legacy_references.push_back(other);
+    }
+  // Legacy sessions still need the yilai alias to follow the selected route,
+  // while inactive profiles must retain the connection they explicitly use.
+  if (previous && *previous != provider && !legacy_references.empty()) {
+    std::string saved = "yilai-sync-previous-yilai";
+    for (int suffix = 2; providers.contains(saved); ++suffix)
+      saved = "yilai-sync-previous-yilai-" + std::to_string(suffix);
+    providers.insert_or_assign(saved, *previous);
+    for (auto *scope : legacy_references)
+      scope->insert_or_assign("model_provider", saved);
+  }
+  providers.insert_or_assign("yilai", provider);
+  clear_active_connection_constraints(root);
+  return root;
+}
+
 std::string format(const toml::table &root) {
   std::ostringstream out;
   out << toml::toml_formatter{root, toml::format_flags::allow_unicode_strings}
@@ -415,8 +450,60 @@ model='unchanged'
                 "yilai-sync-previous-custom" &&
             replaced_root["model_providers"]["yilai-sync-previous-custom"] ==
                 root_active["model_providers"]["custom"],
-        "An inactive profile inherited new credentials after replacing root "
-        "custom.");
+         "An inactive profile inherited new credentials after replacing root "
+         "custom.");
+  for (bool selected : {false, true})
+    for (const char *root_id : {"custom", "yilai"}) {
+      auto input = toml::parse(multiple_profiles);
+      if (!selected)
+        input.erase("profile");
+      input.insert_or_assign("model_provider", root_id);
+      table_at(table_at(input, "profiles"), "legacy")
+          .insert_or_assign("model_provider", "yilai");
+      auto &input_providers = table_at(input, "model_providers");
+      input_providers.insert_or_assign("yilai-sync-previous-custom",
+                                      toml::table{{"name", "Keep custom alias"}});
+      input_providers.insert_or_assign("yilai-sync-previous-yilai",
+                                      toml::table{{"name", "Keep yilai alias"}});
+      auto switched = configure_official(format(input).c_str());
+      auto &output_providers = table_at(switched, "model_providers");
+      check(provider_id(switched) == "custom" &&
+                output_providers["custom"] == output_providers["yilai"] &&
+                output_providers["custom"]["requires_openai_auth"] == true &&
+                !output_providers["custom"]["base_url"] &&
+                !output_providers["custom"]["experimental_bearer_token"] &&
+                !output_providers["custom"]["http_headers"],
+            "Official switching did not install credential-free aliases.");
+      for (const char *name : {"work", "personal", "inherited", "legacy"}) {
+        if (selected && std::string(name) == "work")
+          continue;
+        const auto before_id = input["profiles"][name]["model_provider"]
+                                   .value_or(std::string(root_id));
+        const auto after_id = switched["profiles"][name]["model_provider"]
+                                  .value_or(switched["model_provider"].value_or(std::string("openai")));
+        check(output_providers[after_id] == input_providers[before_id],
+              "Official switching redirected an inactive profile.");
+      }
+      if (selected) {
+        const auto after_id = switched["model_provider"].value_or(std::string());
+        check(output_providers[after_id] == input_providers[root_id],
+              "Official profile switching redirected the inactive root.");
+      }
+      for (const char *id : {"yilai-sync-previous-custom", "yilai-sync-previous-yilai"})
+        check(output_providers[id] == input_providers[id],
+              "Official switching replaced an existing saved connection.");
+      check(configure_official(format(switched).c_str()) == switched,
+            "Repeated official switching must be idempotent.");
+    }
+  auto standalone_official = configure_official(format(standalone).c_str());
+  check(standalone_official["model_providers"].as_table()->size() == 2 &&
+            format(standalone_official).find("first-key") == std::string::npos,
+        "Official switching retained an unreferenced API credential.");
+  auto official_unrelated = configure_official(ccs);
+  for (const char *field : {"model", "model_catalog_json", "mcp_servers", "plugins",
+                            "cli_auth_credentials_store"})
+    check(official_unrelated[field] == before[field],
+          "Official switching modified an unrelated setting.");
   auto restricted = connected;
   restricted.insert_or_assign("openai_base_url", "https://third-party.invalid");
   restricted.insert_or_assign("chatgpt_base_url",
@@ -636,19 +723,7 @@ extern "C" char *yilai_configure_official(const char *text, char **error) {
   if (error) *error = nullptr;
   try {
     if (!text) throw std::runtime_error("Missing configuration input.");
-    auto root = toml::parse(text);
-    root.insert_or_assign("model_provider", "custom");
-    if (auto *profile = active_profile(root)) profile->insert_or_assign("model_provider", "custom");
-    // A legacy session may select its stored provider. Official aliases must
-    // never retain third-party URLs, bearer tokens or headers.
-    auto &providers = table_at(root, "model_providers");
-    for (auto id : {"custom", "yilai"}) {
-      providers.insert_or_assign(id, toml::table{{"name", "OpenAI"},
-        {"requires_openai_auth", true}, {"wire_api", "responses"},
-        {"supports_websockets", true}});
-    }
-    clear_active_connection_constraints(root);
-    auto *result = copy_string(format(root));
+    auto *result = copy_string(format(configure_official(text)));
     if (!result) throw std::runtime_error("Out of memory.");
     return result;
   } catch (const std::exception &failure) { if (error) *error = copy_string(failure.what()); }

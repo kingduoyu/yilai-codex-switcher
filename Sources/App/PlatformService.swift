@@ -222,17 +222,46 @@ final class PlatformService {
             return "本地历史已统一为 custom。"
         }
         if operation == .official {
-            log.event("official_config", "Switching to the built-in OpenAI connection")
-            let before = try snapshot(config)
+            log.event("prepare_config", "Validating official configuration update")
+            let beforeConfig = try snapshot(config)
+            let before: String
+            if let beforeConfig {
+                guard let text = String(data: beforeConfig, encoding: .utf8) else {
+                    throw AppError(message: "配置不是有效 UTF-8，未修改")
+                }
+                before = text
+            } else { before = "" }
+            guard !before.utf8.contains(0) else {
+                throw AppError(message: "配置包含无效空字符，未做修改。")
+            }
             var failure: UnsafeMutablePointer<CChar>?
-            guard before == nil || String(data: before!, encoding: .utf8) != nil else { throw AppError(message: "配置不是有效 UTF-8，未修改") }
-            let output = (before.flatMap { String(data: $0, encoding: .utf8) } ?? "").withCString { yilai_configure_official($0, &failure) }
+            let output = before.withCString { yilai_configure_official($0, &failure) }
             defer { if let output { yilai_config_free(output) } }
             defer { if let failure { yilai_config_free(failure) } }
             guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "官方配置失败") }
-            try write(Data(String(cString: output).utf8), config)
+            let after = Data(String(cString: output).utf8)
+            guard try snapshot(config) == beforeConfig else {
+                throw AppError(message: "配置已被其他程序改动，请关闭后重试。")
+            }
+            log.event("write_config", "Writing official configuration atomically")
+            try write(after, config)
             do { try unifyHistory() }
-            catch { try restore(before, config); throw error }
+            catch {
+                let originalError = error
+                log.event("switch_failed", operationErrorDescription(originalError))
+                log.event("rollback_config", "Restoring prior configuration")
+                do {
+                    guard try snapshot(config) == after else {
+                        throw AppError(message: "配置已被其他程序改动，未覆盖当前文件。")
+                    }
+                    try restore(beforeConfig, config)
+                    log.event("rollback_config", "Restored")
+                } catch {
+                    log.event("rollback_config", "Restore failed: \(operationErrorDescription(error))")
+                    throw AppError(message: "切换失败，连接配置未能还原：\(operationErrorDescription(originalError))")
+                }
+                throw originalError
+            }
             return "已切换到官方，本地历史已统一。请重新打开 Codex。"
         }
         if operation == .cleanup {
@@ -589,6 +618,63 @@ func selfTest() throws {
     try check(try text("config.toml") == configured, "API configuration is not idempotent")
     try checkUntouchedFiles()
     try check(try text("auth.json.yilai-disabled") == "keep disabled auth" && text("auth.json.yilai-session-test") == "keep session auth" && text("yilai-switcher-backup/manifest.json") == "keep manifest", "Switch touched unrelated backups")
+
+    // Official switching preserves auth; failures restore both bytes and absence.
+    do {
+        let officialRoot = root.appendingPathComponent("official-switch", isDirectory: true)
+        try files.createDirectory(at: officialRoot, withIntermediateDirectories: true)
+        let officialService = PlatformService(root: officialRoot)
+        let configURL = officialRoot.appendingPathComponent("config.toml")
+        let authURL = officialRoot.appendingPathComponent("auth.json")
+        let originalConfig = Data(config.utf8)
+        let officialAuth = Data("{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"test-official-access\",\"refresh_token\":\"test-official-refresh\",\"account_id\":\"test-account\"}}".utf8)
+        try originalConfig.write(to: configURL)
+        try officialAuth.write(to: authURL)
+        _ = try officialService.run(.official, requireClosed: false)
+        try check(officialService.mode() == "OpenAI 官方", "Official switch did not select OpenAI")
+        try check(try Data(contentsOf: authURL) == officialAuth, "Official switch changed auth")
+
+        let invalidConfigs: [(Data, String)] = [
+            (Data((config + "\0# must not be silently discarded\n").utf8), "空字符"),
+            (Data([0xff, 0xfe, 0xfd]), "UTF-8")
+        ]
+        for (invalidConfig, expectedError) in invalidConfigs {
+            try invalidConfig.write(to: configURL)
+            var failureMessage = ""
+            do { _ = try officialService.run(.official, requireClosed: false) }
+            catch { failureMessage = error.localizedDescription }
+            try check(failureMessage.contains(expectedError), "Official switch did not reject invalid configuration")
+            try check(try Data(contentsOf: configURL) == invalidConfig, "Rejected official input changed configuration")
+            try check(try Data(contentsOf: authURL) == officialAuth, "Rejected official input changed auth")
+        }
+
+        // A malformed pending pointer fails history after the official config write.
+        let pendingURL = officialRoot.appendingPathComponent("yilai-history-backups/pending.json")
+        try files.createDirectory(at: pendingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let pendingData = Data("{\"generation\":\"official-test-invalid\"}".utf8)
+        try pendingData.write(to: pendingURL)
+        let priorConfigs: [Data?] = [originalConfig, nil]
+        for priorConfig in priorConfigs {
+            if let priorConfig { try priorConfig.write(to: configURL) }
+            else if files.fileExists(atPath: configURL.path) { try files.removeItem(at: configURL) }
+            var failureMessage = ""
+            do { _ = try officialService.run(.official, requireClosed: false) }
+            catch { failureMessage = error.localizedDescription }
+            try check(failureMessage.contains("统一本地历史失败") && failureMessage.contains("Invalid pending backup pointer"), "Official rollback lost the original history failure")
+            try check(!failureMessage.contains("未能还原"), "Official history failure did not roll back completely")
+            if let priorConfig {
+                try check(try Data(contentsOf: configURL) == priorConfig, "Official rollback changed original config bytes")
+            } else {
+                try check(!files.fileExists(atPath: configURL.path), "Official rollback did not restore config absence")
+            }
+            try check(try Data(contentsOf: authURL) == officialAuth, "Official history failure changed auth")
+            try check(try Data(contentsOf: pendingURL) == pendingData, "Official history failure changed its pending pointer")
+        }
+        let officialLogs = try files.contentsOfDirectory(at: officialService.logsDirectory, includingPropertiesForKeys: [.isRegularFileKey])
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        let officialLogText = try officialLogs.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+        try check(officialLogText.contains("write_config") && officialLogText.contains("rollback_config") && officialLogText.contains("Restored"), "Official rollback diagnostics missing")
+    }
 
     // Reset is a reversible rename; it must preserve config bytes, auth and history.
     try put("auth.json", auth)
