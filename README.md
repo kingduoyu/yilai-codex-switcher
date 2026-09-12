@@ -45,4 +45,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.11 构建、附件与发布验证见 releases/v3.3.11/RELEASE-MANIFEST.md；安装包校验值见 SHA256SUMS.txt。
+v3.3.11 构建、附件与发布验证见 releases/v3.3.11/RELEASE-MANIFEST.md。

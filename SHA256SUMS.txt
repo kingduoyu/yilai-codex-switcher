@@ -1,2 +1,0 @@
-3efc89362ecaddfd7e6819f40318e3bc87816e8c83654027728598ce8a3f2e5c  YilaiCodexSwitcher.exe
-e133315a2a0f3b95f2c09b273df265af8e3279d3610d5ac78e4d43b9e66b8703  YilaiCodexSwitcher-macOS-universal.dmg
