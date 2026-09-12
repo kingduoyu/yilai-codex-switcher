@@ -1,8 +1,10 @@
 # v3.3.10 Release Manifest
 
-Status: builds and release regressions verified; draft asset verification and publication are pending.
+Status: published and verified as the latest stable release on 2026-09-12.
 
 Application source: 9aaa1ce807733a4da41993add03261965ea19575. Later release-record commits do not change application or build inputs.
+
+Release tag: v3.3.10, pointing to c9353d2dfef62b1f0114181c05ebf078433c99d2. main and the release branch were updated by a non-force atomic push before publication. The tag is retained unchanged after publication-record updates.
 
 Scope: reject NUL input before official rewrites; revalidate config snapshots before writes and rollback; preserve inactive root/profile connections referenced through custom or legacy yilai. Official custom/yilai aliases remain free of third-party endpoint, bearer-token and header settings. Existing API authentication policy, history migration scope, UI actions and model catalog remain unchanged.
 
@@ -21,5 +23,8 @@ Limits: no production official OAuth send, paid image generation or physical Int
 | YilaiCodexSwitcher-v3.3.10.exe | 5265408 | 9026111177bc26802e201d5c80f2049f59fe01d618dab08dccf92bb695dcc28c |
 | YilaiCodexSwitcher-v3.3.10-macOS-universal.dmg | 6175867 | 28e8dd250e56d57c85e3470ce72d5cdee40672fa9309e56f792ea2fba1a7defe |
 | YilaiCodexSwitcher-v3.3.10-macOS-universal.zip | 5423252 | 7a3930a2a54847d7b50730cbb892bff4de392b49ceaaf481ebc0fbc4de19e5e0 |
+| SHA256SUMS.txt | 323 | 21ad23eb8375fda7385417ab21ba2e6b1a2eff8bef31511755a498b85ff9d340 |
 
-Publication: pending. Upload the three packages and SHA256SUMS.txt to a draft, verify uploaded bytes/hashes, then publish. Final versioned copies belong in the parent publish/win-x64 and publish/mac-universal directories; older files are retained.
+Publication confirmed: 2026-09-12T06:00:20Z; release id 387471362; latest stable tag v3.3.10. URL: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.10. All four asset names, sizes and GitHub SHA-256 digests matched local files; all four draft assets were also downloaded and hash-verified before publication. The published release was rechecked as non-draft/non-prerelease with the same four asset digests and exact target commit.
+
+Delivery: the versioned EXE, DMG and ZIP were copied to the parent publish/win-x64 and publish/mac-universal directories and to user-facing outputs, with SHA-256 verification. SHA256SUMS-v3.3.10.txt was copied with matching bytes to both platform directories and outputs. Versioned Windows normal/error and macOS proof screenshots were retained in their platform publish directories and hash-verified. Older packages and generic filenames were not overwritten.
