@@ -410,17 +410,8 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
   auto configPath = home / "config.toml";
   std::string oldConfig = fs::exists(configPath) ? read(configPath) : "";
   std::string newConfig = restore ? oldConfig : normalize(oldConfig);
-  // CCS uses known legacy ids plus provider ids from configured third-party entries.
-  // Built-in OpenAI is included because this operation explicitly enables official history unification.
-  std::set<std::string> eligible = {"openai", "yilai", "ccswitch", "aicodemirror", "aicoding", "aigocode", "aihubmix", "ark_agentplan", "bailian", "bailing", "byteplus", "claudecn", "compshare", "compshare_coding", "crazyrouter", "ctok", "cubence", "deepseek", "dmxapi", "doubaoseed", "eflowcode", "etok", "kimi", "lemondata", "longcat", "micu", "minimax", "minimax_en", "modelscope", "novita", "nvidia", "openrouter", "packycode", "patewayai", "pipellm", "qianfan_coding", "relaxycode", "rightcode", "runapi", "shengsuanyun", "siliconflow", "siliconflow_en", "sssaicode", "stepfun", "stepfun_en", "therouter", "xiaomi_mimo", "xiaomi_mimo_token_plan", "zhipu_glm", "zhipu_glm_en"};
-  auto configRoot = toml::parse(oldConfig);
-  if (auto *providers = configRoot["model_providers"].as_table())
-    for (auto &[name, node] : *providers) eligible.insert(std::string(name.str()));
-  auto selected = configRoot["model_provider"].value<std::string>();
-  if (selected) eligible.insert(*selected);
-  auto canMigrate = [&](const Json &provider) {
-    return provider.is_null() || (provider.is_string() && eligible.count(provider.get<std::string>()) != 0);
-  };
+  // Repair only the provider id written by our older configurator.
+  auto canMigrate = [](const Json &provider) { return provider == "yilai"; };
   auto parent = home / "yilai-history-backups";
   noLinks(parent);
   Json source;
@@ -773,13 +764,13 @@ void recoverySelfTest(const fs::path &root) {
     write(configPath, originalConfig);
     for (const char *id : {"a", "b"}) {
       const Json meta = {{"type", "session_meta"},
-                         {"payload", {{"id", id}, {"model_provider", "openai"}}}};
+                         {"payload", {{"id", id}, {"model_provider", "yilai"}}}};
       write(home / "sessions" / (std::string(id) + ".jsonl"), meta.dump() + "\n");
     }
     {
       Db db(home / "state_5.sqlite", true);
       db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT,title TEXT)");
-      db.exec("INSERT INTO threads VALUES('a','openai','original'),('b','openai','original')");
+      db.exec("INSERT INTO threads VALUES('a','yilai','original'),('b','yilai','original')");
     }
     operate(home, false);
     const auto parent = home / "yilai-history-backups";
@@ -824,7 +815,7 @@ void recoverySelfTest(const fs::path &root) {
              "Completed recovery reverted history or lost latest pointer");
       // Keep the ordinary manual undo contract after finishing completion.
       operate(home, true);
-      ensure(currentProvider(metadata(read(session))) == "openai" &&
+      ensure(currentProvider(metadata(read(session))) == "yilai" &&
                  read(session).find(newMessage) != std::string::npos,
              "Completed recovery broke undo or lost new messages");
     } else {
@@ -836,20 +827,20 @@ void recoverySelfTest(const fs::path &root) {
       const auto other = home / "sessions/b.jsonl";
       auto bytes = read(other);
       const auto meta = metadata(bytes);
-      bytes.replace(meta.offset, meta.length, changedLine(meta, "openai"));
+      bytes.replace(meta.offset, meta.length, changedLine(meta, "yilai"));
       write(other, bytes);
       {
         Db db(home / "state_5.sqlite");
-        db.exec("UPDATE threads SET model_provider='openai' WHERE id='b'");
+        db.exec("UPDATE threads SET model_provider='yilai' WHERE id='b'");
       }
       if (scenario == 3) {
         // Simulate a prepared transaction before any effective writes.
         auto bytes = read(session);
         const auto meta = metadata(bytes);
-        bytes.replace(meta.offset, meta.length, changedLine(meta, "openai"));
+        bytes.replace(meta.offset, meta.length, changedLine(meta, "yilai"));
         write(session, bytes);
         Db db(home / "state_5.sqlite");
-        db.exec("UPDATE threads SET model_provider='openai' WHERE id='a'");
+        db.exec("UPDATE threads SET model_provider='yilai' WHERE id='a'");
       }
       if (scenario == 2) {
         // A caller that only invokes sync still gets automatic recovery.
@@ -859,7 +850,7 @@ void recoverySelfTest(const fs::path &root) {
       } else {
         const auto report = recoverPending(home);
         ensure(report.at("recovered") == true &&
-                   currentProvider(metadata(read(session))) == "openai",
+                   currentProvider(metadata(read(session))) == "yilai",
                "Pending recovery did not restore partial history");
         if (scenario == 3)
           ensure(report.at("files") == 0 && report.at("rows") == 0,
@@ -917,10 +908,10 @@ void selfTest() {
   for (int i = 0; i < 4; ++i) {
     auto file = home / (i == 3 ? "archived_sessions" : "sessions") /
                 (std::to_string(i) + ".jsonl");
-    std::string provider = i == 0   ? "openai"
+    std::string provider = i == 0   ? "yilai"
                            : i == 1 ? "yilai"
-                           : i == 2 ? "other"
-                                    : "openai";
+                           : i == 2 ? "yilai"
+                                    : "yilai";
     Json meta = {
         {"type", "session_meta"},
         {"payload", {{"id", std::to_string(i)}, {"model_provider", provider}}}};
@@ -937,15 +928,15 @@ void selfTest() {
     db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider "
             "TEXT,title TEXT,archived INTEGER)");
     db.exec("INSERT INTO threads "
-            "VALUES('0','openai','keep',0),('1','yilai','keep2',0),('2','other'"
-            ",'keep3',0),('3','openai','archived',1)");
+            "VALUES('0','yilai','keep',0),('1','yilai','keep2',0),('2','yilai'"
+            ",'keep3',0),('3','yilai','archived',1)");
   }
   {
     Db db(external / "state_5.sqlite", true);
     db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider "
             "TEXT,title TEXT,archived INTEGER)");
     db.exec(
-        "INSERT INTO threads VALUES('external','openai','external keep',0)");
+        "INSERT INTO threads VALUES('external','yilai','external keep',0)");
   }
   {
 #ifdef _WIN32
@@ -1004,11 +995,11 @@ void selfTest() {
            "Injected failure did not roll back files/config");
     {
       Db db(home / "state_5.sqlite");
-      ensure(rows(db)[0][1] == "openai", "Injected failure committed database");
+      ensure(rows(db)[0][1] == "yilai", "Injected failure committed database");
     }
     {
       Db db(external / "state_5.sqlite");
-      ensure(rows(db)[0][1] == "openai",
+      ensure(rows(db)[0][1] == "yilai",
              "Injected failure committed external database");
     }
   }
@@ -1046,7 +1037,7 @@ void selfTest() {
   {
     Db db(home / "state_5.sqlite");
     auto data = rows(db);
-    ensure(data[0][1] == "openai" && data.back()[1] == "custom",
+    ensure(data[0][1] == "yilai" && data.back()[1] == "custom",
            "Restore changed newer thread or lost source provider");
     Stmt q(db, "SELECT title FROM threads WHERE id='0'");
     ensure(sqlite3_step(q.p) == SQLITE_ROW &&
@@ -1060,7 +1051,7 @@ void selfTest() {
          "Restore changed archived metadata");
   {
     Db db(external / "state_5.sqlite");
-    ensure(rows(db)[0][1] == "openai", "Restore missed external database");
+    ensure(rows(db)[0][1] == "yilai", "Restore missed external database");
   }
 
   // Simulate an interruption before any effective writes: a prepared marker
@@ -1090,7 +1081,7 @@ void selfTest() {
   write(home / "sessions/0.jsonl", partial);
   operate(home, true);
   ensure(currentProvider(metadata(read(home / "sessions/0.jsonl"))) ==
-                 "openai" &&
+                 "yilai" &&
              !fs::exists(parent / "pending.json"),
          "Partial synchronization recovery failed");
 

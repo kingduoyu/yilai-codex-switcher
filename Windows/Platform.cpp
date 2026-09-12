@@ -174,14 +174,17 @@ static std::wstring perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
-  if (action == Action::UnifyHistory) {
-    log.step("unify_history", "统一本地历史归属（首次需扫描历史）");
+  auto unifyHistory = [&] {
+    log.step("unify_history", "修复旧易来对话归属");
     char *error = nullptr;
     Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &error), yilai_config_free);
     Buffer detail(error, yilai_config_free);
     ensure(result != nullptr, detail ? detail.get() : "历史统一失败");
     yilai_diagnostic_event(log.context, "history_result", result.get());
-    return L"本地历史已统一为 custom。可切换 API 或官方后重新打开 Codex。";
+  };
+  if (action == Action::UnifyHistory) {
+    unifyHistory();
+    return L"本地历史已统一为 custom。";
   }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
@@ -191,8 +194,14 @@ static std::wstring perform(Action action, const fs::path &root,
     Buffer output(yilai_configure_official(before.c_str(), &error), yilai_config_free);
     Buffer detail(error, yilai_config_free);
     ensure(output != nullptr, detail ? detail.get() : "官方配置失败");
+    const bool existed = fs::exists(config);
     atomic(config, output.get());
-    return L"已切换到官方连接。旧对话兼容配置已保留，请重新打开 Codex。";
+    try { unifyHistory(); }
+    catch (...) {
+      if (existed) atomic(config, before); else fs::remove(config);
+      throw;
+    }
+    return L"已切换到官方，本地历史已统一。请重新打开 Codex。";
   }
   if (action == Action::Cleanup) {
     log.step("rename_config", "停用旧配置");
@@ -289,6 +298,7 @@ static std::wstring perform(Action action, const fs::path &root,
       Buffer sourceDetail(sourceError, yilai_config_free);
       ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源核验失败");
     }
+    unifyHistory();
   } catch (...) {
     const auto failedStage = log.stage, failedLabel = log.label;
     std::string originalError = "未知错误";
@@ -441,13 +451,13 @@ bool selfTest(std::wstring &error) {
                read(root / L"auth.json") == auth,
            "Auth deletion failure did not roll back configuration");
     ensure(read(root / L"yilai-model-catalog.json") == "old-catalog-sentinel", "Auth failure did not restore catalog");
-    const std::string history = "invalid history must remain unchanged\n";
+    const std::string history = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"example\",\"model_provider\":\"custom\"}}\n";
     atomic(root / L"sessions/example.jsonl", history);
-    atomic(root / L"state_5.sqlite", "opaque database sentinel");
-    atomic(root / L"yilai-history-backups/pending.json", "opaque pending sentinel");
+    atomic(root / L"unrelated.sqlite", "opaque database sentinel");
+    atomic(root / L"unused-history-marker.json", "opaque pending sentinel");
     run(Action::Configure, root, L"sk-test", false);
     ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"), "API configure did not remove auth");
-    ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"state_5.sqlite") == "opaque database sentinel" && read(root / L"yilai-history-backups/pending.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
+    ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"unrelated.sqlite") == "opaque database sentinel" && read(root / L"unused-history-marker.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
     ensure(read(root / L"yilai-model-catalog.json") == yilai_model_catalog(), "Managed catalog not written");
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);

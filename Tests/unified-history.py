@@ -19,14 +19,14 @@ with tempfile.TemporaryDirectory(prefix='yilai-unified-') as tmp:
     def run(action):
         result=subprocess.run([str(exe),action,str(home)],capture_output=True,timeout=30)
         assert result.returncode==0,result.stderr.decode(errors='replace')
-    original=config.read_bytes();start=time.perf_counter();run('unify');elapsed=time.perf_counter()-start
-    assert config.read_bytes()==original
+    original=config.read_bytes();start=time.perf_counter();run('configure');elapsed=time.perf_counter()-start
+    assert tomllib.loads(config.read_text(encoding='utf-8'))['model_provider']=='custom'
     for file,tail in tails.items():
         content=file.read_text(encoding='utf-8');assert content[content.index('\n'):]==tail
-        expected='unrelated-private' if file.stem=='4' else 'custom'
+        expected=['custom','ccswitch','openai','custom','unrelated-private'][int(file.stem)]
         assert json.loads(content.splitlines()[0])['payload']['model_provider']==expected
     db=sqlite3.connect(home/'state_5.sqlite');rows=db.execute('select * from threads order by id').fetchall();db.close()
-    assert all(row[1]==('unrelated-private' if row[0]=='4' else 'custom') and row[2]=='title-'+row[0] for row in rows)
+    assert all(row[1]==['custom','ccswitch','openai','custom','unrelated-private'][int(row[0])] and row[2]=='title-'+row[0] for row in rows)
     backups=list((home/'yilai-history-backups').glob('*/manifest.json'));assert backups
     run('unify');assert len(list((home/'yilai-history-backups').glob('*/manifest.json')))==len(backups)
     run('configure')

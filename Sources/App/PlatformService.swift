@@ -206,7 +206,7 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
-        if operation == .unifyHistory {
+        func unifyHistory() throws {
             log.event("unify_history", "Unifying local session provider metadata")
             var failure: UnsafeMutablePointer<CChar>?
             let result = root.path.withCString { yilai_sync_history($0, 0, &failure) }
@@ -216,7 +216,10 @@ final class PlatformService {
             }
             guard let result else { throw AppError(message: failure.map { String(cString: $0) } ?? "历史统一失败") }
             log.event("history_result", String(cString: result))
-            return "本地历史已统一为 custom。可切换 API 或官方后重新打开 Codex。"
+        }
+        if operation == .unifyHistory {
+            try unifyHistory()
+            return "本地历史已统一为 custom。"
         }
         if operation == .official {
             log.event("official_config", "Switching to the built-in OpenAI connection")
@@ -228,7 +231,9 @@ final class PlatformService {
             defer { if let failure { yilai_config_free(failure) } }
             guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "官方配置失败") }
             try write(Data(String(cString: output).utf8), config)
-            return "已切换到官方连接。旧对话兼容配置已保留，请重新打开 Codex。"
+            do { try unifyHistory() }
+            catch { try restore(before, config); throw error }
+            return "已切换到官方，本地历史已统一。请重新打开 Codex。"
         }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
@@ -343,6 +348,7 @@ final class PlatformService {
                     throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
                 }
             }
+            try unifyHistory()
         } catch {
             log.event("switch_failed", operationErrorDescription(error))
             var failures: [String] = []
@@ -426,15 +432,15 @@ func selfTest() throws {
     }
     // Historical data is opaque to this application, including malformed files.
     let untouchedFiles: [String: Data] = [
-        "sessions/active.jsonl": Data("{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"yilai\"}}\n".utf8),
-        "sessions/broken.jsonl": Data("invalid json\n".utf8),
-        "archived_sessions/old.jsonl": Data("archived opaque bytes\n".utf8),
-        "state_5.sqlite": Data([0, 255, 42, 7, 0, 19]),
-        "state_5.sqlite-wal": Data([11, 128, 0, 15]),
-        "state_5.sqlite-shm": Data([27, 0, 129]),
+        "unrelated/active.jsonl": Data("{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"yilai\"}}\n".utf8),
+        "unrelated/broken.jsonl": Data("invalid json\n".utf8),
+        "unrelated/old.jsonl": Data("archived opaque bytes\n".utf8),
+        "unrelated-state.bin": Data([0, 255, 42, 7, 0, 19]),
+        "unrelated-state-wal.bin": Data([11, 128, 0, 15]),
+        "unrelated-state-shm.bin": Data([27, 0, 129]),
         "session_index.jsonl": Data("invalid index\n".utf8),
         "history.jsonl": Data("opaque command history\n".utf8),
-        "yilai-history-backups/pending.json": Data("invalid pending journal\n".utf8)
+        "unrelated/pending.json": Data("invalid pending journal\n".utf8)
     ]
     for (name, data) in untouchedFiles {
         let url = root.appendingPathComponent(name)

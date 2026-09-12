@@ -158,9 +158,6 @@ struct Content: View {
                         .foregroundStyle(.secondary)
                         .padding(.trailing, 12)
                 }
-                Button("统一本地历史") { model.execute(.unifyHistory) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12))
                 Button("重置配置") { model.execute(.cleanup) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
@@ -180,7 +177,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.8"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "易来 Codex 配置器 v3.3.9"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in

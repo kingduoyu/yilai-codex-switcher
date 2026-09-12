@@ -52,7 +52,9 @@ async function snapshots(){
  const saved={};
  async function visit(dir){for(const entry of await readdir(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())await visit(p);else saved[p]=(await readFile(p)).toString('base64');}}
  for(const name of ['sessions','archived_sessions','yilai-history-backups']){try{await visit(path.join(home,name));}catch(e){if(e.code!=='ENOENT')throw e;}}
- for(const name of await readdir(home)){if(/\.sqlite(?:-wal|-shm)?$/.test(name))saved[path.join(home,name)]=(await readFile(path.join(home,name))).toString('base64');}
+ for(const name of await readdir(home)){if(!name.startsWith('state_5.sqlite') && /\.sqlite(?:-wal|-shm)?$/.test(name))saved[path.join(home,name)]=(await readFile(path.join(home,name))).toString('base64');}
+ const logical=spawnSync('python',['-c',"import sqlite3,json,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); print(json.dumps(c.execute('select * from threads order by id').fetchall(),sort_keys=True))",path.join(home,'state_5.sqlite')],{encoding:'utf8',windowsHide:true});
+ assert.equal(logical.status,0,logical.stderr);saved['logical-thread-index']=logical.stdout;
  return saved;
 }
 try{
@@ -85,7 +87,6 @@ p=pathlib.Path(db.execute('select rollout_path from threads where id=?',(tid,)).
 b=p.read_bytes();head,tail=b.split(b'\\n',1);m=json.loads(head);m['payload']['model_provider']='yilai';p.write_bytes(json.dumps(m).encode()+b'\\n'+tail)
 db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.commit();db.close()`,home,id],{encoding:'utf8',windowsHide:true});
  assert.equal(alter.status,0,alter.stderr);
- operation('unify');
  operation('official');
  server=await new Server().init();
  const official=(await server.request('config/read',{includeLayers:false})).config;
@@ -104,8 +105,8 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  await server.close();server=null;
  await mkdir(path.join(home,'yilai-history-backups'),{recursive:true});
  const privateFragment='PRIVATE-HISTORY-MUST-NOT-APPEAR';
- await writeFile(path.join(home,'sessions','broken.jsonl'),privateFragment+' invalid JSON');
- await writeFile(path.join(home,'yilai-history-backups','pending.json'),'invalid pending marker');
+ await writeFile(path.join(home,'sessions','broken.jsonl'),JSON.stringify({type:'session_meta',payload:{id:'sentinel',model_provider:'custom',note:privateFragment}})+'\n');
+ await writeFile(path.join(home,'yilai-history-backups','unrelated.json'),'invalid pending marker');
  const beforeHistory=await snapshots();
  operation('configure');
  assert.deepEqual(await snapshots(),beforeHistory,'API configuration/probe touched history/database files');
