@@ -15,3 +15,5 @@ Limits: no production official OAuth send, paid image generation, or Intel hardw
 | YilaiCodexSwitcher-v3.3.9.exe | 5237248 | 279038c85a9afafcb2ee8251e3f4161220ef6902aa5e3d18480ea9cc6042a79f |
 | YilaiCodexSwitcher-v3.3.9-macOS-universal.dmg | 6156938 | 0ac140798de4a2c1965f979081fef7e07155cf670390f9cd89ce50a17ae994db |
 | YilaiCodexSwitcher-v3.3.9-macOS-universal.zip | 5397219 | 8ff98cad1ff58bb908f5536896f1c50b29d9d24e501775affd7cf667c5417b67 |
+
+Publication confirmed: 2026-09-12T02:45:52Z; release id 387432088; latest tag v3.3.9. All four uploaded asset sizes and SHA-256 digests matched local files before publication. Parent publish directories and Desktop Windows copy hash-verified.
