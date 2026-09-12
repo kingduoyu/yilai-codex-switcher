@@ -173,6 +173,17 @@ static std::wstring perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  if (action == Action::Official) {
+    log.step("official_config", "切换官方连接");
+    regular(config);
+    const auto before = fs::exists(config) ? read(config) : "";
+    char *error = nullptr;
+    Buffer output(yilai_configure_official(before.c_str(), &error), yilai_config_free);
+    Buffer detail(error, yilai_config_free);
+    ensure(output != nullptr, detail ? detail.get() : "官方配置失败");
+    atomic(config, output.get());
+    return L"已切换到官方连接。旧对话兼容配置已保留，请重新打开 Codex。";
+  }
   if (action == Action::Cleanup) {
     log.step("rename_config", "停用旧配置");
     regular(config);
@@ -329,7 +340,7 @@ static std::wstring perform(Action action, const fs::path &root,
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
                  bool closed, const fs::path &runtimeOverride,
                  std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);

@@ -631,6 +631,30 @@ extern "C" char *yilai_configure_api(const char *text, const char *key,
   }
   return nullptr;
 }
+extern "C" char *yilai_configure_official(const char *text, char **error) {
+  if (error) *error = nullptr;
+  try {
+    if (!text) throw std::runtime_error("Missing configuration input.");
+    auto root = toml::parse(text);
+    root.erase("model_provider");
+    if (auto *profiles = root["profiles"].as_table())
+      for (auto &[name, node] : *profiles)
+        if (auto *profile = node.as_table()) profile->erase("model_provider");
+    auto *providers = root["model_providers"].as_table();
+    if (providers) {
+      // Keep compatibility definitions so existing yilai/custom sessions load,
+      // while making the built-in OpenAI route the active default.
+      for (auto id : {"custom", "yilai"}) if (auto *p = (*providers)[id].as_table()) {
+        p->erase("experimental_bearer_token");
+        p->insert_or_assign("requires_openai_auth", true);
+      }
+    }
+    auto *result = copy_string(format(root));
+    if (!result) throw std::runtime_error("Out of memory.");
+    return result;
+  } catch (const std::exception &failure) { if (error) *error = copy_string(failure.what()); }
+  return nullptr;
+}
 extern "C" char *yilai_clear_connection_overrides(const char *text, char **error) {
   if (error)
     *error = nullptr;

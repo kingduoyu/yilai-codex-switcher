@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 char *yilai_configure_api(const char *existing, const char *key, char **error);
+char *yilai_configure_official(const char *existing, char **error);
 /* Pure rewrite for a caller-confirmed effective override layer; malloc-owned. */
 char *yilai_clear_connection_overrides(const char *text, char **error);
 /* Static catalog bytes; do not free. */

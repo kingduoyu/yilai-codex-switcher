@@ -15,7 +15,7 @@ constexpr UINT Done = WM_APP + 1;
 constexpr UINT Progress = WM_APP + 2;
 ULONGLONG operationStarted = 0;
 std::wstring progressStage;
-constexpr int Api = 1001, Reset = 1003, Eye = 1004,
+constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004,
               Logs = 1005;
 constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
                    Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
@@ -150,16 +150,15 @@ void begin(HWND window, int id) {
     InvalidateRect(window, nullptr, FALSE);
     return;
   }
-  auto action = id == Api        ? app::Action::Configure
-                                 : app::Action::Cleanup;
+  auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : app::Action::Cleanup;
   busy = true;
   operationStarted = GetTickCount64();
   progressStage = L"准备操作";
   SetTimer(window, 1, 1000, nullptr);
   failed = false;
   statusText =
-      id == Reset ? L"正在停用旧配置…" : L"正在配置 API 和生图，请稍候…";
-  for (int child : {Api, Reset, Eye, Logs})
+      id == Reset ? L"正在停用旧配置…" : id == Official ? L"正在切换官方…" : L"正在配置 API 和生图，请稍候…";
+  for (int child : {Api, Official, Reset, Eye, Logs})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
   InvalidateRect(window, nullptr, FALSE);
@@ -195,7 +194,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     SendMessageW(keyBox, EM_SETPASSWORDCHAR, L'●', 0);
     SendMessageW(keyBox, EM_SETCUEBANNER, FALSE, LPARAM(L"粘贴你的 API Key"));
     button(window, Eye, L"显示", 628, 190, 48, 28);
-    button(window, Api, L"配置易来 API · 启用生图", 52, 248, 636, 50);
+    button(window, Api, L"配置易来 API · 启用生图", 52, 248, 310, 50);
+    button(window, Official, L"切换到官方", 378, 248, 310, 50);
     button(window, Reset, L"重置配置", 624, 476, 88, 26);
     button(window, Logs, L"查看日志", 624, 382, 88, 28);
     ShowWindow(GetDlgItem(window, Logs), SW_HIDE);
@@ -241,7 +241,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
           statusText += L" 无法定位日志目录。";
           InvalidateRect(window, nullptr, FALSE);
         }
-      } else if (id == Api || id == Reset)
+      } else if (id == Api || id == Official || id == Reset)
         begin(window, id);
     }
     return 0;

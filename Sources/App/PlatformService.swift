@@ -5,7 +5,7 @@ import Diagnostics
 import OperationGuard
 import ConfigSources
 
-enum Operation: String, CaseIterable { case configure, cleanup }
+enum Operation: String, CaseIterable { case configure, official, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -204,6 +204,18 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
+        if operation == .official {
+            log.event("official_config", "Switching to the built-in OpenAI connection")
+            let before = try snapshot(config)
+            var failure: UnsafeMutablePointer<CChar>?
+            let output = configURL.path.withCString { _ in
+                (before.flatMap { String(data: $0, encoding: .utf8) } ?? "").withCString { yilai_configure_official($0, &failure) }
+            }
+            defer { if let failure { yilai_config_free(failure) } }
+            guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "官方配置失败") }
+            try write(Data(String(cString: output).utf8), config)
+            return "已切换到官方连接。旧对话兼容配置已保留，请重新打开 Codex。"
+        }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
             guard let before = try snapshot(config) else { return "尚无配置，无需重置。" }

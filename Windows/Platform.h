@@ -3,7 +3,7 @@
 #include <string>
 #include <functional>
 namespace app {
-enum class Action { Configure, Cleanup };
+enum class Action { Configure, Official, Cleanup };
 std::filesystem::path home();
 std::wstring mode(const std::filesystem::path &home);
 std::wstring run(Action action, const std::filesystem::path &home,

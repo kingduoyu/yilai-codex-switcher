@@ -22,7 +22,7 @@ final class Controller: ObservableObject {
         guard !busy else { return }
         busy = true
         failed = false
-        message = operation == .cleanup ? "正在重置配置…" : "正在配置易来 API 并启用生图，请稍候…"
+        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<String, Error> = Result { try service.run(operation, key: token) }
@@ -115,7 +115,10 @@ struct Content: View {
                 Button("配置易来 API · 启用生图") { model.execute(.configure) }
                     .buttonStyle(SwitchButtonStyle())
 
-                Label("自动启用生图 · 切回官方请使用 CCS", systemImage: "sparkles")
+                Button("切换到官方") { model.execute(.official) }
+                    .buttonStyle(.borderedProminent)
+
+                Label("生图自动启用 · 官方登录与旧对话兼容", systemImage: "sparkles")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
