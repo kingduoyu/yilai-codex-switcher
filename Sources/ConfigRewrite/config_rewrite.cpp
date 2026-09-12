@@ -253,6 +253,23 @@ toml::table configure_official(const char *text) {
   return root;
 }
 
+toml::table apply_desktop_mode(const char *text, const char *mode) {
+  auto root = toml::parse(text);
+  if (std::string(mode) != "full-access")
+    return root;
+  auto *profile = active_profile(root);
+  const auto hasPolicy = [&](const char *field) {
+    return root.contains(field) || (profile && profile->contains(field));
+  };
+  // An explicit policy always wins. The desktop preference is only a fallback
+  // for configurations that otherwise fall back to Codex's approval defaults.
+  if (!hasPolicy("approval_policy") && !hasPolicy("sandbox_mode")) {
+    root.insert_or_assign("approval_policy", "never");
+    root.insert_or_assign("sandbox_mode", "danger-full-access");
+  }
+  return root;
+}
+
 std::string format(const toml::table &root) {
   std::ostringstream out;
   out << toml::toml_formatter{root, toml::format_flags::allow_unicode_strings}
@@ -504,6 +521,21 @@ model='unchanged'
                             "cli_auth_credentials_store"})
     check(official_unrelated[field] == before[field],
           "Official switching modified an unrelated setting.");
+  const char *no_permissions = "model = 'gpt-6-astra'\n";
+  auto desktop_full_access =
+      apply_desktop_mode(no_permissions, "full-access");
+  check(desktop_full_access["approval_policy"] == "never" &&
+            desktop_full_access["sandbox_mode"] == "danger-full-access",
+        "Desktop full-access mode was not preserved in configuration.");
+  auto explicit_permissions = toml::parse(ccs);
+  explicit_permissions.insert_or_assign("approval_policy", "on-request");
+  explicit_permissions.insert_or_assign("sandbox_mode", "read-only");
+  check(apply_desktop_mode(format(explicit_permissions).c_str(),
+                           "full-access") == explicit_permissions,
+        "Desktop mode replaced explicit permission settings.");
+  check(apply_desktop_mode(no_permissions, "agent") ==
+            toml::parse(no_permissions),
+        "An unrelated desktop mode changed configuration.");
   auto restricted = connected;
   restricted.insert_or_assign("openai_base_url", "https://third-party.invalid");
   restricted.insert_or_assign("chatgpt_base_url",
@@ -727,6 +759,33 @@ extern "C" char *yilai_configure_official(const char *text, char **error) {
     if (!result) throw std::runtime_error("Out of memory.");
     return result;
   } catch (const std::exception &failure) { if (error) *error = copy_string(failure.what()); }
+  return nullptr;
+}
+extern "C" char *yilai_apply_desktop_mode(const char *text, const char *mode,
+                                           char **error) {
+  if (error)
+    *error = nullptr;
+  try {
+    if (!text || !mode)
+      throw std::runtime_error("Missing desktop mode input.");
+    const auto original = toml::parse(text);
+    const auto updated = apply_desktop_mode(text, mode);
+    auto *result =
+        copy_string(updated == original ? std::string(text) : format(updated));
+    if (!result)
+      throw std::runtime_error("Out of memory.");
+    return result;
+  } catch (const toml::parse_error &failure) {
+    if (error)
+      *error = copy_string("Invalid TOML at line " +
+                           std::to_string(failure.source().begin.line) +
+                           ", column " +
+                           std::to_string(failure.source().begin.column) +
+                           ". Original files were not changed.");
+  } catch (const std::exception &failure) {
+    if (error)
+      *error = copy_string(failure.what());
+  }
   return nullptr;
 }
 extern "C" char *yilai_clear_connection_overrides(const char *text, char **error) {

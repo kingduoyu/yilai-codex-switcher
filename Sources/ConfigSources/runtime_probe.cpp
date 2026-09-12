@@ -307,7 +307,7 @@ std::string probe_config(const std::filesystem::path &runtime,
   const auto deadline=Clock::now()+std::chrono::seconds(20);
   ProbeStorage storage;
   Child child;child.launch(runtime,home,storage.path);
-  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.10"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
+  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.11"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
   bool initialized=false;
   std::string pending;
   size_t received=0;

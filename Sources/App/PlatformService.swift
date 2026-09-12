@@ -138,6 +138,33 @@ final class PlatformService {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    private func desktopMode() -> String? {
+        let state = root.appendingPathComponent(".codex-global-state.json")
+        guard let data = try? Data(contentsOf: state),
+              data.count <= 16 * 1024 * 1024,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let atom = object["electron-persisted-atom-state"] as? [String: Any],
+              let modes = atom["agent-mode-by-host-id"] as? [String: Any]
+        else { return nil }
+        return modes["local"] as? String
+    }
+
+    private func preservingDesktopMode(_ text: String) throws -> String {
+        guard let mode = desktopMode() else { return text }
+        var failure: UnsafeMutablePointer<CChar>?
+        let output = text.withCString { existing in
+            mode.withCString { yilai_apply_desktop_mode(existing, $0, &failure) }
+        }
+        defer {
+            if let output { yilai_config_free(output) }
+            if let failure { yilai_config_free(failure) }
+        }
+        guard let output else {
+            throw AppError(message: failure.map { String(cString: $0) } ?? "无法保留 Codex 默认权限设置")
+        }
+        return String(cString: output)
+    }
+
     private func write(_ data: Data, _ url: URL) throws {
         try regular(url)
         try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -207,7 +234,7 @@ final class PlatformService {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
         func unifyHistory() throws {
-            log.event("unify_history", "Unifying local session provider metadata")
+            log.event("unify_history", "Checking legacy Yilai session provider metadata")
             var failure: UnsafeMutablePointer<CChar>?
             let result = root.path.withCString { yilai_sync_history($0, 0, &failure) }
             defer {
@@ -234,8 +261,9 @@ final class PlatformService {
             guard !before.utf8.contains(0) else {
                 throw AppError(message: "配置包含无效空字符，未做修改。")
             }
+            let prepared = try preservingDesktopMode(before)
             var failure: UnsafeMutablePointer<CChar>?
-            let output = before.withCString { yilai_configure_official($0, &failure) }
+            let output = prepared.withCString { yilai_configure_official($0, &failure) }
             defer { if let output { yilai_config_free(output) } }
             defer { if let failure { yilai_config_free(failure) } }
             guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "官方配置失败") }
@@ -262,7 +290,7 @@ final class PlatformService {
                 }
                 throw originalError
             }
-            return "已切换到官方，本地历史已统一。请重新打开 Codex。"
+            return "已切换到官方，旧对话检查完成。请重新打开 Codex。"
         }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
@@ -311,8 +339,9 @@ final class PlatformService {
         guard !before.utf8.contains(0), !token.utf8.contains(0) else {
             throw AppError(message: "配置或 Key 包含无效空字符。")
         }
+        let prepared = try preservingDesktopMode(before)
         var failure: UnsafeMutablePointer<CChar>?
-        let output = before.withCString { text in
+        let output = prepared.withCString { text in
             token.withCString { yilai_configure_api(text, $0, &failure) }
         }
         defer {
@@ -483,6 +512,7 @@ func selfTest() throws {
     }
     let config = "model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json='cc-switch-model-catalog.json'\n[model_providers.custom]\nname='Other'\nbase_url='https://other.invalid'\nwire_api='responses'\n"
     let auth = "{\"auth_mode\":\"chatgpt\"}"
+    try put(".codex-global-state.json", "{\"electron-persisted-atom-state\":{\"agent-mode-by-host-id\":{\"local\":\"full-access\"}}}")
     try put("config.toml", config)
     try put("auth.json", auth)
     try put("auth.json.yilai-disabled", "keep disabled auth")
@@ -612,6 +642,7 @@ func selfTest() throws {
     let configured = try text("config.toml")
     try check(configured.contains("image_generation = true"), "API switch did not enable images")
     try check(configured.contains("gpt-6-astra") && configured.contains("yilai-model-catalog.json"), "API switch did not install the managed catalog")
+    try check(configured.contains("approval_policy = \"never\"") && configured.contains("sandbox_mode = \"danger-full-access\""), "API switch did not preserve the desktop full-access mode")
     try check(try text("yilai-model-catalog.json") == String(cString: yilai_model_catalog()), "Managed catalog bytes differ")
     try checkUntouchedFiles()
     _ = try service.run(.configure, key: "sk-test-key", requireClosed: false)

@@ -232,6 +232,21 @@ Json rows(Db &db) {
   ensure(rc == SQLITE_DONE, "History database read failed");
   return out;
 }
+Json migratableRows(Db &db) {
+  Stmt q(db, "SELECT id,model_provider FROM threads "
+             "WHERE model_provider='yilai' ORDER BY id");
+  Json out = Json::array();
+  int rc;
+  while ((rc = sqlite3_step(q.p)) == SQLITE_ROW) {
+    ensure(sqlite3_column_type(q.p, 0) == SQLITE_TEXT,
+           "Invalid thread ID");
+    out.push_back(
+        {std::string(reinterpret_cast<const char *>(sqlite3_column_text(q.p, 0))),
+         "yilai"});
+  }
+  ensure(rc == SQLITE_DONE, "History database read failed");
+  return out;
+}
 void backupDb(Db &db, const fs::path &target) {
   Db dest(target, true);
   sqlite3_backup *b = sqlite3_backup_init(dest.p, "main", db.p, "main");
@@ -259,7 +274,8 @@ struct Meta {
   Json record;
   bool bom = false, cr = false;
 };
-Meta metadata(const std::string &bytes, const fs::path &path = {}) try {
+Meta metadata(const std::string &bytes, const fs::path &path = {},
+              bool validateTail = true) try {
   Meta result;
   bool found = false;
   size_t start = 0;
@@ -295,6 +311,8 @@ Meta metadata(const std::string &bytes, const fs::path &path = {}) try {
           result = {start, end - start, line, payload["id"].get<std::string>(),
                     value, bom,         cr};
           found = true;
+          if (!validateTail)
+            break;
         }
       }
     }
@@ -308,6 +326,29 @@ Meta metadata(const std::string &bytes, const fs::path &path = {}) try {
     if (static_cast<unsigned char>(c) < 32)
       c = '?';
   throw std::runtime_error("Invalid history metadata" + location + ": " + e.what());
+}
+Meta quickMetadata(const fs::path &path) {
+  noLinks(path);
+  ensure(fs::is_regular_file(path) &&
+             fs::file_size(path) <= 512ULL * 1024 * 1024,
+         "Invalid or oversized history file: " + utf8(path));
+  constexpr size_t prefixLimit = 64 * 1024;
+  const auto size = fs::file_size(path);
+  if (size <= prefixLimit)
+    return metadata(read(path), path, false);
+  std::ifstream input(path, std::ios::binary);
+  ensure(bool(input), "Cannot read: " + utf8(path));
+  std::string prefix(prefixLimit, '\0');
+  input.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
+  ensure(!input.bad(), "Read failed: " + utf8(path));
+  prefix.resize(static_cast<size_t>(input.gcount()));
+  try {
+    return metadata(prefix, path, false);
+  } catch (...) {
+    // Preserve compatibility with unusual files whose first SessionMeta is
+    // beyond the prefix. Malformed candidates still fail during full checks.
+    return metadata(read(path), path, false);
+  }
 }
 std::string changedLine(const Meta &m, const Json &provider) {
   auto value = m.record;
@@ -476,8 +517,9 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
            "Invalid history backup path");
     ensure(fs::exists(file),
            "A synchronized history file is missing; no changes were made");
-    auto bytes = read(file);
-    auto meta = metadata(bytes, file);
+    std::string bytes;
+    auto meta = restore ? (bytes = read(file), metadata(bytes, file))
+                        : quickMetadata(file);
     Json fromProvider = currentProvider(meta), toProvider = "custom";
     if (!restore) {
       ensure(seenIds.insert(meta.id).second,
@@ -495,6 +537,13 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
     }
     if (fromProvider == toProvider || (!restore && !canMigrate(fromProvider)))
       continue;
+    if (!restore) {
+      // Validate the complete JSONL only for a file we are about to rewrite.
+      // Already-custom and unrelated sessions take the fast prefix-only path.
+      bytes = read(file);
+      meta = metadata(bytes, file, true);
+      fromProvider = currentProvider(meta);
+    }
     plan["files"].push_back(
         {{"path", utf8(file)},
          {"id", meta.id},
@@ -528,7 +577,9 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
   std::vector<std::unique_ptr<Db>> connections;
   for (const auto &p : dbPaths) {
     auto db = std::make_unique<Db>(p);
-    auto snapshot = rows(*db);
+    // The repeat path only needs legacy rows. Full integrity and backup
+    // verification still run before any database change is committed.
+    auto snapshot = restore ? rows(*db) : migratableRows(*db);
     Json changes = Json::array();
     for (const auto &row : snapshot) {
       if (!restore && (row[1] == "custom" || !canMigrate(row[1])))

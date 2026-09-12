@@ -6,6 +6,7 @@
 #include "OperationGuard.h"
 #include "ConfigSources.h"
 #include "HistorySync.h"
+#include "../Sources/Shared/vendor/json.hpp"
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -18,6 +19,7 @@
 namespace app {
 namespace fs = std::filesystem;
 namespace {
+using Json = nlohmann::json;
 std::string utf8(const std::wstring &s) {
   if (s.empty())
     return {};
@@ -116,6 +118,42 @@ void requireAppsClosed() {
       "请完全退出 Codex 和 CC-Switch 后再操作；关闭窗口后也请检查后台进程。");
 }
 using Buffer = std::unique_ptr<char, decltype(&yilai_config_free)>;
+std::string desktopMode(const fs::path &root) {
+  try {
+    const auto state = root / L".codex-global-state.json";
+    regular(state);
+    if (!fs::exists(state) || fs::file_size(state) > 16ULL * 1024 * 1024)
+      return {};
+    auto value = Json::parse(read(state), nullptr, false);
+    if (value.is_discarded() || !value.is_object())
+      return {};
+    const auto atom = value.find("electron-persisted-atom-state");
+    if (atom == value.end() || !atom->is_object())
+      return {};
+    const auto modes = atom->find("agent-mode-by-host-id");
+    if (modes == atom->end() || !modes->is_object())
+      return {};
+    const auto mode = modes->find("local");
+    return mode != modes->end() && mode->is_string()
+               ? mode->get<std::string>()
+               : std::string();
+  } catch (...) {
+    return {};
+  }
+}
+std::string preserveDesktopMode(const fs::path &root,
+                                const std::string &config) {
+  const auto mode = desktopMode(root);
+  if (mode.empty())
+    return config;
+  char *error = nullptr;
+  Buffer output(yilai_apply_desktop_mode(config.c_str(), mode.c_str(), &error),
+                yilai_config_free);
+  Buffer detail(error, yilai_config_free);
+  ensure(output != nullptr,
+         detail ? detail.get() : "无法保留 Codex 默认权限设置");
+  return output.get();
+}
 struct OperationLog {
   YilaiDiagnostic *context;
   std::string stage = "start";
@@ -175,7 +213,7 @@ static std::wstring perform(Action action, const fs::path &root,
     requireAppsClosed();
   const auto config = root / L"config.toml";
   auto unifyHistory = [&] {
-    log.step("unify_history", "修复旧易来对话归属");
+    log.step("unify_history", "检查旧易来对话归属");
     char *error = nullptr;
     Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &error), yilai_config_free);
     Buffer detail(error, yilai_config_free);
@@ -193,8 +231,10 @@ static std::wstring perform(Action action, const fs::path &root,
     const auto before = hadConfig ? read(config) : "";
     ensure(before.find('\0') == std::string::npos,
            "Configuration contains NUL bytes");
+    const auto prepared = preserveDesktopMode(root, before);
     char *error = nullptr;
-    Buffer output(yilai_configure_official(before.c_str(), &error), yilai_config_free);
+    Buffer output(yilai_configure_official(prepared.c_str(), &error),
+                  yilai_config_free);
     Buffer detail(error, yilai_config_free);
     ensure(output != nullptr, detail ? detail.get() : "官方配置失败");
     const std::string after(output.get());
@@ -227,7 +267,7 @@ static std::wstring perform(Action action, const fs::path &root,
         throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
       throw;
     }
-    return L"已切换到官方，本地历史已统一。请重新打开 Codex。";
+    return L"已切换到官方，旧对话检查完成。请重新打开 Codex。";
   }
   if (action == Action::Cleanup) {
     log.step("rename_config", "停用旧配置");
@@ -266,9 +306,10 @@ static std::wstring perform(Action action, const fs::path &root,
             ? L""
             : key.substr(start, key.find_last_not_of(L" \t\r\n") - start + 1);
   ensure(key.find(L'\0') == std::wstring::npos, "API key contains NUL bytes");
+  const auto prepared = preserveDesktopMode(root, before);
   char *error = nullptr;
   Buffer result(
-      yilai_configure_api(before.c_str(), utf8(key).c_str(), &error),
+      yilai_configure_api(prepared.c_str(), utf8(key).c_str(), &error),
       yilai_config_free);
   Buffer detail(error, yilai_config_free);
   ensure(result != nullptr,
@@ -438,6 +479,8 @@ bool selfTest(std::wstring &error) {
         "switch-model-catalog.json'\n[model_providers.custom]\nname='Other'"
         "\nbase_url='https://other.invalid'\nwire_api='responses'\n";
     const std::string auth = "{\"auth_mode\":\"chatgpt\"}";
+    atomic(root / L".codex-global-state.json",
+           R"json({"electron-persisted-atom-state":{"agent-mode-by-host-id":{"local":"full-access"}}})json");
     const auto noReplacePath = root / L"no-replace-auth.json";
     atomic(noReplacePath, "existing-auth");
     bool collisionRejected = false;
@@ -483,12 +526,24 @@ bool selfTest(std::wstring &error) {
     atomic(root / L"unused-history-marker.json", "opaque pending sentinel");
     run(Action::Configure, root, L"sk-test", false);
     ensure(mode(root) == L"易来 API" && !fs::exists(root / L"auth.json"), "API configure did not remove auth");
+    ensure(read(root / L"config.toml").find("approval_policy = \"never\"") !=
+                   std::string::npos &&
+               read(root / L"config.toml")
+                       .find("sandbox_mode = \"danger-full-access\"") !=
+                   std::string::npos,
+           "API configure did not preserve the desktop full-access mode");
     ensure(read(root / L"sessions/example.jsonl") == history && read(root / L"unrelated.sqlite") == "opaque database sentinel" && read(root / L"unused-history-marker.json") == "opaque pending sentinel", "Configuration touched unrelated history files");
     ensure(read(root / L"yilai-model-catalog.json") == yilai_model_catalog(), "Managed catalog not written");
     atomic(root / L"auth.json", auth);
     run(Action::Official, root, L"", false);
     ensure(mode(root) == L"OpenAI 官方" && read(root / L"auth.json") == auth,
            "Official switch did not preserve existing auth");
+    ensure(read(root / L"config.toml").find("approval_policy = \"never\"") !=
+                   std::string::npos &&
+               read(root / L"config.toml")
+                       .find("sandbox_mode = \"danger-full-access\"") !=
+                   std::string::npos,
+           "Official switch did not preserve the desktop full-access mode");
     ensure(read(root / L"sessions/example.jsonl") == history,
            "Official switch changed unrelated history");
 
@@ -510,7 +565,7 @@ bool selfTest(std::wstring &error) {
       try {
         run(Action::Official, root, L"", false, {}, [&](const std::wstring &stage) {
           // Fail once at the history boundary, after the official config write.
-          if (stage == L"修复旧易来对话归属" && !injected) {
+          if (stage == L"检查旧易来对话归属" && !injected) {
             injected = true;
             sawOfficial = mode(root) == L"OpenAI 官方";
             throw std::runtime_error("Injected official history failure");
