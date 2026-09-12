@@ -142,7 +142,7 @@ void record(YilaiDiagnostic *context, const char *stage, const char *message,
   if (!context || !context->file)
     return;
   std::lock_guard<std::mutex> guard(context->mutex);
-  json entry{{"version", "3.3.7"},
+  json entry{{"version", "3.3.8"},
              {"platform", platform},
              {"time", timestamp()},
              {"action", sanitize(context, context->operation)},
@@ -258,7 +258,7 @@ void self_test() {
     int rows = 0;
     while (std::getline(input, line)) {
       auto entry = json::parse(line);
-      check(entry["version"] == "3.3.7" && entry["platform"] == platform &&
+      check(entry["version"] == "3.3.8" && entry["platform"] == platform &&
                 entry.contains("time") && entry["action"] == "test-operation",
             "Diagnostic fields missing.");
       check(line.find(key) == std::string::npos &&

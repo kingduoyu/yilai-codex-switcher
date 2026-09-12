@@ -42,7 +42,7 @@ function operation(action,probe=false){const r=spawnSync(driver,[action,home,...
 class Server {
  constructor(){this.pending=new Map();this.notifications=[];this.id=0;this.stderr='';this.buffer='';this.child=spawn(codex,['app-server'],{cwd:home,env:{...process.env,CODEX_HOME:home,CODEX_SQLITE_HOME:home},windowsHide:true,stdio:['pipe','pipe','pipe']});this.done=new Promise(resolve=>this.child.on('close',resolve));this.child.stderr.on('data',x=>this.stderr+=x);this.child.stdout.on('data',x=>{this.buffer+=x;let i;while((i=this.buffer.indexOf('\n'))>=0){const line=this.buffer.slice(0,i);this.buffer=this.buffer.slice(i+1);let msg;try{msg=JSON.parse(line);}catch{continue;}if(this.pending.has(msg.id)){const w=this.pending.get(msg.id);this.pending.delete(msg.id);clearTimeout(w.timer);msg.error?w.reject(new Error(JSON.stringify(msg.error))):w.resolve(msg.result);}else{this.notifications.push(msg);}}});this.child.on('exit',code=>{for(const w of this.pending.values()){clearTimeout(w.timer);w.reject(new Error('Runtime exit '+code+' '+this.stderr));}this.pending.clear();});}
  request(method,params){return new Promise((resolve,reject)=>{const id=++this.id;const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error('Timeout '+method+' '+this.stderr));},25000);this.pending.set(id,{resolve,reject,timer});this.child.stdin.write(JSON.stringify({id,method,params})+'\n');});}
- async init(){await this.request('initialize',{clientInfo:{name:'rewrite_integration',version:'3.3.6'},capabilities:{experimentalApi:true}});this.child.stdin.write(JSON.stringify({method:'initialized',params:{}})+'\n');return this;}
+ async init(){await this.request('initialize',{clientInfo:{name:'rewrite_integration',version:'3.3.8'},capabilities:{experimentalApi:true}});this.child.stdin.write(JSON.stringify({method:'initialized',params:{}})+'\n');return this;}
  async turn(id,text){const result=await this.request('turn/start',{threadId:id,input:[{type:'text',text,text_elements:[]}]});const deadline=Date.now()+25000;while(Date.now()<deadline){const n=this.notifications.find(n=>n.method==='turn/completed'&&n.params.threadId===id&&n.params.turn.id===result.turn.id);if(n){assert.equal(n.params.turn.status,'completed',JSON.stringify(n));return n;}await new Promise(r=>setTimeout(r,30));}throw new Error('Turn timeout '+this.stderr+' '+JSON.stringify(this.notifications));}
  async close(){this.child.stdin.end();this.child.kill();await this.done;}
 }
@@ -78,6 +78,30 @@ try{
  await server.close();server=null;
  const responses=requests.filter(r=>r.url.endsWith('/responses'));assert(responses.length>=1);
  for(const r of responses){assert.equal(r.headers.authorization,'Bearer sk-isolated-test-only');assert.equal(r.headers['x-openai-actor-authorization'],'local-image-extension');assert.equal(r.body.model,'gpt-6-astra');assert(r.body.tools.some(t=>t.type==='namespace'&&t.name==='image_gen'&&t.tools.some(f=>f.name==='imagegen')));}
+ // Recreate the reported legacy provider in a real runtime-created rollout and index.
+ const alter = spawnSync('python',['-c',`import sqlite3,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]);tid=sys.argv[2];db=sqlite3.connect(h/'state_5.sqlite')
+p=pathlib.Path(db.execute('select rollout_path from threads where id=?',(tid,)).fetchone()[0])
+b=p.read_bytes();head,tail=b.split(b'\\n',1);m=json.loads(head);m['payload']['model_provider']='yilai';p.write_bytes(json.dumps(m).encode()+b'\\n'+tail)
+db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.commit();db.close()`,home,id],{encoding:'utf8',windowsHide:true});
+ assert.equal(alter.status,0,alter.stderr);
+ operation('unify');
+ operation('official');
+ server=await new Server().init();
+ const official=(await server.request('config/read',{includeLayers:false})).config;
+ assert.equal(official.model_provider,'custom');
+ assert.equal(official.model_providers.custom.requires_openai_auth,true);
+ assert(!official.model_providers.custom.base_url);
+ assert(!official.model_providers.custom.experimental_bearer_token);
+ const officialThread=await server.request('thread/read',{threadId:id,includeTurns:true});
+ assert.equal(officialThread.thread.modelProvider,'custom');
+ await server.close();server=null;
+ operation('configure');
+ await writeFile(path.join(home,'config.toml'),configured.replaceAll('https://api.yilai-ai.com','http://127.0.0.1:'+port+'/v1'));
+ server=await new Server().init();
+ await server.request('thread/resume',{threadId:id,cwd:home,model:'gpt-6-astra',modelProvider:'custom',approvalPolicy:'never',sandbox:'read-only'});
+ await server.turn(id,'Resume migrated legacy conversation');
+ await server.close();server=null;
  await mkdir(path.join(home,'yilai-history-backups'),{recursive:true});
  const privateFragment='PRIVATE-HISTORY-MUST-NOT-APPEAR';
  await writeFile(path.join(home,'sessions','broken.jsonl'),privateFragment+' invalid JSON');
@@ -96,7 +120,7 @@ try{
  const logDir=path.join(home,'yilai-switcher-logs');const logs=(await Promise.all((await readdir(logDir)).map(n=>readFile(path.join(logDir,n),'utf8')))).join('\n');
  for(const secret of [privateFragment,'sk-isolated-test-only','sk-fake-file-credential'])assert(!logs.includes(secret));
  assert(!logs.includes('sync_history')&&!logs.includes('recover_history')&&!logs.includes('undo_history'));
- facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','logs contain no history operations or credentials'];
+ facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy yilai rollout/index unified; official runtime reads it; API resumes it','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','logs contain no history operations or credentials'];
  facts.status='passed';await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}

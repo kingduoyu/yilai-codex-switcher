@@ -214,6 +214,7 @@ toml::table configure(const char *text, const char *key) {
     install_custom(root, std::move(provider));
     clear_active_connection_constraints(root);
     enhance(root);
+    table_at(root, "model_providers").insert_or_assign("yilai", *selected_provider(root));
   return root;
 }
 
@@ -296,7 +297,7 @@ enabled = true
               standalone,
           "Repeated API switching must be idempotent.");
   auto new_key = configure(format(standalone).c_str(), "second-key");
-  check(new_key["model_providers"].as_table()->size() == 1 &&
+  check(new_key["model_providers"].as_table()->size() == 2 &&
             new_key["model_providers"]["custom"]["experimental_bearer_token"] ==
                 "second-key" &&
             format(new_key).find("first-key") == std::string::npos,
@@ -318,7 +319,7 @@ enabled = true
         "An unchanged active profile redirected the root or another profile.");
   auto changed_shared =
       configure(format(identical_shared).c_str(), "second-key");
-  check(changed_shared["model_providers"].as_table()->size() == 2 &&
+  check(changed_shared["model_providers"].as_table()->size() == 3 &&
             changed_shared["model_provider"] == "yilai-sync-previous-custom" &&
             changed_shared["profiles"]["personal"]["model_provider"] ==
                 "yilai-sync-previous-custom" &&
@@ -335,7 +336,7 @@ enabled = true
                         toml::table{{"name", "Keep existing saved route"}});
   auto retained_changed =
       configure(format(retained_legacy).c_str(), "second-key");
-  check(retained_changed["model_providers"].as_table()->size() == 2 &&
+  check(retained_changed["model_providers"].as_table()->size() == 3 &&
             retained_changed["model_providers"]["yilai-sync-previous-custom"] ==
                 retained_legacy["model_providers"]["yilai-sync-previous-custom"],
         "Switching removed or replaced an existing historical provider.");
@@ -636,19 +637,17 @@ extern "C" char *yilai_configure_official(const char *text, char **error) {
   try {
     if (!text) throw std::runtime_error("Missing configuration input.");
     auto root = toml::parse(text);
-    root.erase("model_provider");
-    if (auto *profiles = root["profiles"].as_table())
-      for (auto &[name, node] : *profiles)
-        if (auto *profile = node.as_table()) profile->erase("model_provider");
-    auto *providers = root["model_providers"].as_table();
-    if (providers) {
-      // Keep compatibility definitions so existing yilai/custom sessions load,
-      // while making the built-in OpenAI route the active default.
-      for (auto id : {"custom", "yilai"}) if (auto *p = (*providers)[id].as_table()) {
-        p->erase("experimental_bearer_token");
-        p->insert_or_assign("requires_openai_auth", true);
-      }
+    root.insert_or_assign("model_provider", "custom");
+    if (auto *profile = active_profile(root)) profile->insert_or_assign("model_provider", "custom");
+    // A legacy session may select its stored provider. Official aliases must
+    // never retain third-party URLs, bearer tokens or headers.
+    auto &providers = table_at(root, "model_providers");
+    for (auto id : {"custom", "yilai"}) {
+      providers.insert_or_assign(id, toml::table{{"name", "OpenAI"},
+        {"requires_openai_auth", true}, {"wire_api", "responses"},
+        {"supports_websockets", true}});
     }
+    clear_active_connection_constraints(root);
     auto *result = copy_string(format(root));
     if (!result) throw std::runtime_error("Out of memory.");
     return result;

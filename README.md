@@ -1,12 +1,13 @@
-# 易来 Codex 配置器 v3.3.7
+# 易来 Codex 配置器 v3.3.8
 
-Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。官方连接切换交给 CCS，本工具不提供切回官方或恢复旧配置的入口。
+Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，并提供独立的本地历史统一入口。
 
 ## 使用
 
 1. 完全退出 Codex 和 CC-Switch，包括后台进程。
 2. 填写 API Key，点击 **配置易来 API · 启用生图**，完成后重新打开 Codex。
-3. 需要官方连接时，使用 CCS 切换。
+3. 旧对话来自 yilai、ccswitch 或官方时，完全退出 Codex/CCS 后点一次 **统一本地历史**，再选择 API 或官方。
+4. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
 
@@ -19,9 +20,11 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 ## 本地历史与日志
 
-本版不读取、同步、迁移或恢复历史，不改写历史数据库。CCS 的历史统一开关保持原样。配置来源探测使用临时数据库目录。
+“统一本地历史”独立运行，迁移 sessions/archived_sessions 中第一条 session_meta 的 provider 和 state SQLite 索引为 custom。保留正文、继承的父会话元数据、标题和归档状态；仅处理已知旧 provider、当前配置定义的 provider 与 openai，不改未知私有 provider。
 
-日志在 CODEX_HOME/yilai-switcher-logs，记录配置阶段、错误和回滚，不写密钥或对话正文。重置只改名停用 config.toml。
+首次统一会扫描本地历史并创建 yilai-history-backups；出错恢复，未完成事务下次统一先恢复。重复运行无变化不再创建备份。迁移不修改连接或登录文件、不下载云端历史、不修改 CCS 数据库。日常 API/官方切换不扫描历史；新增旧来源会话需再次点统一。首次耗时取决于历史大小，不能保证十秒内。
+
+API 和官方都使用 custom 归属；yilai 兼容别名随路由变化。官方 custom/yilai 不保留第三方地址、Key 或 headers。日志位于 CODEX_HOME/yilai-switcher-logs；重置只改名停用 config.toml。
 
 ## CCS 使用顺序
 
@@ -39,4 +42,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-版本事实见 releases/v3.3.7/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。
+版本事实见 releases/v3.3.8/RELEASE-MANIFEST.md，校验值见 SHA256SUMS.txt。

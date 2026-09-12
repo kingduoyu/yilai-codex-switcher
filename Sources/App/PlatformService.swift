@@ -4,8 +4,9 @@ import ConfigRewrite
 import Diagnostics
 import OperationGuard
 import ConfigSources
+import HistorySync
 
-enum Operation: String, CaseIterable { case configure, official, cleanup }
+enum Operation: String, CaseIterable { case configure, official, unifyHistory, cleanup }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -41,6 +42,7 @@ private final class DiagnosticLog {
         case "checking_apps": lastMainStage = "检查后台程序"
         case "prepare_sources": lastMainStage = "识别配置来源"
         case "apply_sources": lastMainStage = "处理连接覆盖配置"
+        case "unify_history": lastMainStage = "统一本地历史"
         case "verify_sources": lastMainStage = "核验实际生效连接"
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
@@ -204,13 +206,25 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
+        if operation == .unifyHistory {
+            log.event("unify_history", "Unifying local session provider metadata")
+            var failure: UnsafeMutablePointer<CChar>?
+            let result = root.path.withCString { yilai_sync_history($0, 0, &failure) }
+            defer {
+                if let result { yilai_config_free(result) }
+                if let failure { yilai_config_free(failure) }
+            }
+            guard let result else { throw AppError(message: failure.map { String(cString: $0) } ?? "历史统一失败") }
+            log.event("history_result", String(cString: result))
+            return "本地历史已统一为 custom。可切换 API 或官方后重新打开 Codex。"
+        }
         if operation == .official {
             log.event("official_config", "Switching to the built-in OpenAI connection")
             let before = try snapshot(config)
             var failure: UnsafeMutablePointer<CChar>?
-            let output = config.path.withCString { _ in
-                (before.flatMap { String(data: $0, encoding: .utf8) } ?? "").withCString { yilai_configure_official($0, &failure) }
-            }
+            guard before == nil || String(data: before!, encoding: .utf8) != nil else { throw AppError(message: "配置不是有效 UTF-8，未修改") }
+            let output = (before.flatMap { String(data: $0, encoding: .utf8) } ?? "").withCString { yilai_configure_official($0, &failure) }
+            defer { if let output { yilai_config_free(output) } }
             defer { if let failure { yilai_config_free(failure) } }
             guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "官方配置失败") }
             try write(Data(String(cString: output).utf8), config)
@@ -388,7 +402,7 @@ final class PlatformService {
 }
 
 func selfTest() throws {
-    for test in [yilai_config_self_test, yilai_diagnostic_self_test] {
+    for test in [yilai_config_self_test, yilai_diagnostic_self_test, yilai_history_self_test] {
         var error: UnsafeMutablePointer<CChar>?
         let ok = test(&error)
         let detail = error.map { String(cString: $0) } ?? "Core test failed"

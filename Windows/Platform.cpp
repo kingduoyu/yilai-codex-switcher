@@ -5,6 +5,7 @@
 #include "Diagnostics.h"
 #include "OperationGuard.h"
 #include "ConfigSources.h"
+#include "HistorySync.h"
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -173,6 +174,15 @@ static std::wstring perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  if (action == Action::UnifyHistory) {
+    log.step("unify_history", "统一本地历史归属（首次需扫描历史）");
+    char *error = nullptr;
+    Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &error), yilai_config_free);
+    Buffer detail(error, yilai_config_free);
+    ensure(result != nullptr, detail ? detail.get() : "历史统一失败");
+    yilai_diagnostic_event(log.context, "history_result", result.get());
+    return L"本地历史已统一为 custom。可切换 API 或官方后重新打开 Codex。";
+  }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
     regular(config);
@@ -340,7 +350,7 @@ static std::wstring perform(Action action, const fs::path &root,
 std::wstring run(Action action, const fs::path &root, const std::wstring &input,
                  bool closed, const fs::path &runtimeOverride,
                  std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::UnifyHistory ? "unify_history" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);

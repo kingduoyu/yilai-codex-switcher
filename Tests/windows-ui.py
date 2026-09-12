@@ -50,7 +50,8 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
         logs = u.GetDlgItem(window, 1005)
         api = u.GetDlgItem(window, 1001)
         assert logs and api, "Expected controls missing"
-        assert not u.GetDlgItem(window, 1002), "Removed official button remains"
+        assert u.GetDlgItem(window, 1002), "Official button missing"
+        assert u.GetDlgItem(window, 1006), "History unification button missing"
         u.FindWindowExW.argtypes = [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR]
         u.FindWindowExW.restype = w.HWND
         edit = u.FindWindowExW(window, None, "Edit", None)
