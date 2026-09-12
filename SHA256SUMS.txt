@@ -1,3 +1,3 @@
-279038c85a9afafcb2ee8251e3f4161220ef6902aa5e3d18480ea9cc6042a79f  YilaiCodexSwitcher-v3.3.9.exe
-0ac140798de4a2c1965f979081fef7e07155cf670390f9cd89ce50a17ae994db  YilaiCodexSwitcher-v3.3.9-macOS-universal.dmg
-8ff98cad1ff58bb908f5536896f1c50b29d9d24e501775affd7cf667c5417b67  YilaiCodexSwitcher-v3.3.9-macOS-universal.zip
+9026111177bc26802e201d5c80f2049f59fe01d618dab08dccf92bb695dcc28c  YilaiCodexSwitcher-v3.3.10.exe
+28e8dd250e56d57c85e3470ce72d5cdee40672fa9309e56f792ea2fba1a7defe  YilaiCodexSwitcher-v3.3.10-macOS-universal.dmg
+7a3930a2a54847d7b50730cbb892bff4de392b49ceaaf481ebc0fbc4de19e5e0  YilaiCodexSwitcher-v3.3.10-macOS-universal.zip
