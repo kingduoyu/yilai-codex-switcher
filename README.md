@@ -2,7 +2,7 @@
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，切换时自动检查旧易来对话归属，无需额外按钮。
 
-稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg) · [macOS ZIP](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.zip)。也可以在 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载带版本号的附件。
+稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg)。也可以打开 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载。
 
 ## 使用
 
