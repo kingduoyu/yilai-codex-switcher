@@ -501,59 +501,63 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
                {"new_config", newConfig},
                {"status", "prepared"},
                {"files", Json::array()},
+               {"skipped_files", Json::array()},
                {"databases", Json::array()}};
-  std::set<std::string> seenIds;
   auto files = restore ? std::vector<fs::path>{} : sessionFiles(home);
   if (restore)
     for (const auto &record : source["files"])
       files.push_back(from(record.at("path")));
   for (const auto &file : files) {
-    auto relative = file.lexically_relative(home);
-    ensure(file.is_absolute() && file == file.lexically_normal() &&
-               !relative.empty() &&
-               (*relative.begin() == "sessions" ||
-                *relative.begin() == "archived_sessions") &&
-               file.extension() == ".jsonl",
-           "Invalid history backup path");
-    ensure(fs::exists(file),
-           "A synchronized history file is missing; no changes were made");
-    std::string bytes;
-    auto meta = restore ? (bytes = read(file), metadata(bytes, file))
-                        : quickMetadata(file);
-    Json fromProvider = currentProvider(meta), toProvider = "custom";
-    if (!restore) {
-      ensure(seenIds.insert(meta.id).second,
-             "Duplicate session IDs require manual review");
-    }
-    if (restore) {
-      auto found = std::find_if(
-          source["files"].begin(), source["files"].end(),
-          [&](const Json &r) { return r.at("path") == utf8(file); });
-      ensure(found != source["files"].end() && found->at("id") == meta.id,
-             "Session identity changed");
-      if (fromProvider != "custom")
+    try {
+      auto relative = file.lexically_relative(home);
+      ensure(file.is_absolute() && file == file.lexically_normal() &&
+                 !relative.empty() &&
+                 (*relative.begin() == "sessions" ||
+                  *relative.begin() == "archived_sessions") &&
+                 file.extension() == ".jsonl",
+             "Invalid history backup path");
+      ensure(fs::exists(file),
+             "A synchronized history file is missing; no changes were made");
+      std::string bytes;
+      auto meta = restore ? (bytes = read(file), metadata(bytes, file))
+                          : quickMetadata(file);
+      Json fromProvider = currentProvider(meta), toProvider = "custom";
+      if (restore) {
+        auto found = std::find_if(
+            source["files"].begin(), source["files"].end(),
+            [&](const Json &r) { return r.at("path") == utf8(file); });
+        ensure(found != source["files"].end() && found->at("id") == meta.id,
+               "Session identity changed");
+        if (fromProvider != "custom")
+          continue;
+        toProvider = found->at("from");
+      }
+      if (fromProvider == toProvider ||
+          (!restore && !canMigrate(fromProvider)))
         continue;
-      toProvider = found->at("from");
+      if (!restore) {
+        // Validate the complete JSONL only for a file we are about to rewrite.
+        // Already-custom and unrelated sessions take the fast prefix-only path.
+        bytes = read(file);
+        meta = metadata(bytes, file, true);
+        fromProvider = currentProvider(meta);
+      }
+      plan["files"].push_back(
+          {{"path", utf8(file)},
+           {"id", meta.id},
+           {"from", fromProvider},
+           {"to", toProvider},
+           {"old_line", meta.raw},
+           {"new_line", changedLine(meta, toProvider)},
+           {"offset", meta.offset},
+           {"size", bytes.size()},
+           {"backup", std::to_string(plan["files"].size()) + ".jsonl"}});
+    } catch (const std::exception &e) {
+      if (restore)
+        throw;
+      plan["skipped_files"].push_back(
+          {{"path", utf8(file)}, {"stage", "scan"}, {"error", e.what()}});
     }
-    if (fromProvider == toProvider || (!restore && !canMigrate(fromProvider)))
-      continue;
-    if (!restore) {
-      // Validate the complete JSONL only for a file we are about to rewrite.
-      // Already-custom and unrelated sessions take the fast prefix-only path.
-      bytes = read(file);
-      meta = metadata(bytes, file, true);
-      fromProvider = currentProvider(meta);
-    }
-    plan["files"].push_back(
-        {{"path", utf8(file)},
-         {"id", meta.id},
-         {"from", fromProvider},
-         {"to", toProvider},
-         {"old_line", meta.raw},
-         {"new_line", changedLine(meta, toProvider)},
-         {"offset", meta.offset},
-         {"size", bytes.size()},
-         {"backup", std::to_string(plan["files"].size()) + ".jsonl"}});
   }
   auto dbPaths = restore ? std::vector<fs::path>{} : databases(home, oldConfig);
   if (restore) {
@@ -622,22 +626,52 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
       if (fs::exists(parent / "pending.json"))
         fs::remove(parent / "pending.json");
     }
-    return {{"files", 0}, {"rows", 0}, {"backup", ""}, {"restored", restore}};
+    return {{"files", 0},
+            {"skipped_files", plan["skipped_files"].size()},
+            {"rows", 0},
+            {"backup", ""},
+            {"restored", restore}};
   }
   fs::create_directories(backup);
 #ifndef _WIN32
   ::chmod(parent.c_str(), 0700);
   ::chmod(backup.c_str(), 0700);
 #endif
-  write(backup / "config.toml", oldConfig);
+  Json backedFiles = Json::array();
   for (const auto &edit : plan["files"]) {
-    auto bytes = read(from(edit.at("path")));
-    auto meta = metadata(bytes, from(edit.at("path")));
-    ensure(meta.raw == edit["old_line"] && meta.offset == edit["offset"] &&
-               bytes.size() == edit["size"],
-           "History changed during backup");
-    write(backup / edit.at("backup").get<std::string>(), bytes);
+    const auto target = backup / edit.at("backup").get<std::string>();
+    try {
+      auto bytes = read(from(edit.at("path")));
+      auto meta = metadata(bytes, from(edit.at("path")));
+      ensure(meta.raw == edit["old_line"] && meta.offset == edit["offset"] &&
+                 bytes.size() == edit["size"],
+             "History changed during backup");
+      write(target, bytes);
+      backedFiles.push_back(edit);
+    } catch (const std::exception &e) {
+      if (restore)
+        throw;
+      std::error_code ignored;
+      fs::remove(target, ignored);
+      plan["skipped_files"].push_back(
+          {{"path", edit.at("path")},
+           {"stage", "backup"},
+           {"error", e.what()}});
+    }
   }
+  plan["files"] = std::move(backedFiles);
+  if (plan["files"].empty() && connections.empty() &&
+      newConfig == oldConfig) {
+    std::error_code ignored;
+    fs::remove_all(backup, ignored);
+    fs::remove(parent, ignored);
+    return {{"files", 0},
+            {"skipped_files", plan["skipped_files"].size()},
+            {"rows", 0},
+            {"backup", ""},
+            {"restored", restore}};
+  }
+  write(backup / "config.toml", oldConfig);
   for (size_t i = 0; i < connections.size(); ++i)
     backupDb(*connections[i],
              backup / plan["databases"][i]["backup"].get<std::string>());
@@ -654,15 +688,25 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
       updateRows(*connections[i], plan["databases"][i]["rows"]);
     for (size_t i = 0; i < plan["files"].size(); ++i) {
       const auto &edit = plan["files"][i];
-      auto p = from(edit.at("path"));
-      auto bytes = read(p);
-      auto original = read(backup / edit.at("backup").get<std::string>());
-      ensure(bytes == original, "History changed after backup");
-      bytes.replace(edit["offset"].get<size_t>(),
-                    edit["old_line"].get<std::string>().size(),
-                    edit["new_line"].get<std::string>());
-      write(p, bytes);
-      changedFiles.push_back(i);
+      try {
+        auto p = from(edit.at("path"));
+        auto bytes = read(p);
+        auto original = read(backup / edit.at("backup").get<std::string>());
+        ensure(bytes == original, "History changed after backup");
+        bytes.replace(edit["offset"].get<size_t>(),
+                      edit["old_line"].get<std::string>().size(),
+                      edit["new_line"].get<std::string>());
+        write(p, bytes);
+        changedFiles.push_back(i);
+      } catch (const std::exception &e) {
+        if (restore)
+          throw;
+        plan["skipped_files"].push_back(
+            {{"path", edit.at("path")},
+             {"stage", "write"},
+             {"error", e.what()}});
+        continue;
+      }
       if (failAfter > 0 && int(changedFiles.size()) == failAfter)
         throw std::runtime_error("Synthetic rollback test");
     }
@@ -745,7 +789,8 @@ Json operateLocked(const fs::path &home, bool restore, int failAfter = 0,
           "Rollback incomplete. Keep backups and inspect: " + utf8(backup));
     throw;
   }
-  return {{"files", plan["files"].size()},
+  return {{"files", changedFiles.size()},
+          {"skipped_files", plan["skipped_files"].size()},
           {"rows", count},
           {"backup", utf8(backup)},
           {"restored", restore}};
@@ -947,6 +992,35 @@ void selfTest() {
     }
   } cleanup{home};
   recoverySelfTest(home);
+  const auto tolerant = home / "best-effort";
+  write(tolerant / "config.toml", "model='gpt-6-astra'\n");
+  const std::string duplicateMeta =
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"duplicate\",\"model_provider\":\"yilai\"}}\n";
+  write(tolerant / "sessions/duplicate.jsonl", duplicateMeta);
+  write(tolerant / "archived_sessions/duplicate-copy.jsonl", duplicateMeta);
+  write(tolerant / "sessions/broken.jsonl", "not-json\n");
+  {
+    Db db(tolerant / "state_5.sqlite", true);
+    db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT,title TEXT)");
+    db.exec("INSERT INTO threads VALUES('duplicate','yilai','keep')");
+  }
+  const auto tolerantResult = operate(tolerant, false);
+  ensure(tolerantResult["files"] == 2 &&
+             tolerantResult["skipped_files"] == 1 &&
+             tolerantResult["rows"] == 1 &&
+             currentProvider(metadata(read(tolerant /
+                                           "sessions/duplicate.jsonl"))) ==
+                 "custom" &&
+             currentProvider(metadata(read(
+                 tolerant / "archived_sessions/duplicate-copy.jsonl"))) ==
+                 "custom" &&
+             read(tolerant / "sessions/broken.jsonl") == "not-json\n",
+         "Best-effort sync did not migrate duplicate IDs or skip bad JSONL");
+  const auto tolerantRepeat = operate(tolerant, false);
+  ensure(tolerantRepeat["files"] == 0 &&
+             tolerantRepeat["skipped_files"] == 1 &&
+             tolerantRepeat["rows"] == 0,
+         "Best-effort repeat check was not idempotent");
   const auto external = home / "external-sqlite";
   fs::create_directories(external);
   // Explicit synthetic SQLite location prevents inherited CODEX_SQLITE_HOME
@@ -1164,14 +1238,13 @@ void selfTest() {
   write(manifestPath, validSource.dump(2));
   operate(home, true);
   write(home / "sessions/broken.jsonl", "not json");
-  failed = false;
-  try {
-    operate(home, false);
-  } catch (...) {
-    failed = true;
-  }
-  ensure(failed && read(home / "config.toml") == config,
-         "Malformed history modified configuration");
+  const auto skippedMalformed = operate(home, false);
+  ensure(skippedMalformed["files"] == 4 &&
+             skippedMalformed["skipped_files"] == 1 &&
+             read(home / "sessions/broken.jsonl") == "not json" &&
+             read(home / "config.toml") == config,
+         "Malformed history was not skipped while valid sessions migrated");
+  operate(home, true);
   fs::remove(home / "sessions/broken.jsonl");
   // Already-custom canonical metadata must not hide invalid history later in
   // the file, and errors must identify the file without echoing its content.

@@ -233,7 +233,7 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> String {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
-        func unifyHistory() throws {
+        func unifyHistory() throws -> Bool {
             log.event("unify_history", "Checking legacy Yilai session provider metadata")
             var failure: UnsafeMutablePointer<CChar>?
             let result = root.path.withCString { yilai_sync_history($0, 0, &failure) }
@@ -242,11 +242,30 @@ final class PlatformService {
                 if let failure { yilai_config_free(failure) }
             }
             guard let result else { throw AppError(message: failure.map { String(cString: $0) } ?? "历史统一失败") }
-            log.event("history_result", String(cString: result))
+            let text = String(cString: result)
+            log.event("history_result", text)
+            guard let data = text.data(using: .utf8),
+                  let report = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AppError(message: "历史同步结果无效")
+            }
+            return ((report["skipped_files"] as? NSNumber)?.intValue ?? 0) == 0
+        }
+        func checkHistoryBestEffort() -> Bool {
+            do {
+                let complete = try unifyHistory()
+                if !complete {
+                    log.event("history_warning", "Some invalid sessions were skipped")
+                }
+                return complete
+            } catch {
+                log.event("history_warning", operationErrorDescription(error))
+                return false
+            }
         }
         if operation == .unifyHistory {
-            try unifyHistory()
-            return "本地历史已统一为 custom。"
+            return try unifyHistory()
+                ? "本地历史已统一为 custom。"
+                : "旧易来对话已尽量同步，部分异常会话已跳过。"
         }
         if operation == .official {
             log.event("prepare_config", "Validating official configuration update")
@@ -273,24 +292,9 @@ final class PlatformService {
             }
             log.event("write_config", "Writing official configuration atomically")
             try write(after, config)
-            do { try unifyHistory() }
-            catch {
-                let originalError = error
-                log.event("switch_failed", operationErrorDescription(originalError))
-                log.event("rollback_config", "Restoring prior configuration")
-                do {
-                    guard try snapshot(config) == after else {
-                        throw AppError(message: "配置已被其他程序改动，未覆盖当前文件。")
-                    }
-                    try restore(beforeConfig, config)
-                    log.event("rollback_config", "Restored")
-                } catch {
-                    log.event("rollback_config", "Restore failed: \(operationErrorDescription(error))")
-                    throw AppError(message: "切换失败，连接配置未能还原：\(operationErrorDescription(originalError))")
-                }
-                throw originalError
-            }
-            return "已切换到官方，旧对话检查完成。请重新打开 Codex。"
+            return checkHistoryBestEffort()
+                ? "已切换到官方，旧对话检查完成。请重新打开 Codex。"
+                : "已切换到官方。部分旧对话未能检查，连接配置不受影响。请重新打开 Codex。"
         }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
@@ -406,7 +410,6 @@ final class PlatformService {
                     throw AppError(message: sourceError.map { String(cString: $0) } ?? "新连接未实际生效，已停止切换。")
                 }
             }
-            try unifyHistory()
         } catch {
             log.event("switch_failed", operationErrorDescription(error))
             var failures: [String] = []
@@ -461,7 +464,9 @@ final class PlatformService {
             }
             throw error
         }
-        return "已切换到易来 API，生图已启用。请重新打开 Codex。"
+        return checkHistoryBestEffort()
+            ? "已切换到易来 API，生图已启用。请重新打开 Codex。"
+            : "已切换到易来 API，生图已启用。部分旧对话未能检查，不影响当前配置。请重新打开 Codex。"
     }
 }
 
@@ -679,7 +684,7 @@ func selfTest() throws {
             try check(try Data(contentsOf: authURL) == officialAuth, "Rejected official input changed auth")
         }
 
-        // A malformed pending pointer fails history after the official config write.
+        // A malformed pending pointer warns after the official config write.
         let pendingURL = officialRoot.appendingPathComponent("yilai-history-backups/pending.json")
         try files.createDirectory(at: pendingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let pendingData = Data("{\"generation\":\"official-test-invalid\"}".utf8)
@@ -688,23 +693,37 @@ func selfTest() throws {
         for priorConfig in priorConfigs {
             if let priorConfig { try priorConfig.write(to: configURL) }
             else if files.fileExists(atPath: configURL.path) { try files.removeItem(at: configURL) }
-            var failureMessage = ""
-            do { _ = try officialService.run(.official, requireClosed: false) }
-            catch { failureMessage = error.localizedDescription }
-            try check(failureMessage.contains("统一本地历史失败") && failureMessage.contains("Invalid pending backup pointer"), "Official rollback lost the original history failure")
-            try check(!failureMessage.contains("未能还原"), "Official history failure did not roll back completely")
-            if let priorConfig {
-                try check(try Data(contentsOf: configURL) == priorConfig, "Official rollback changed original config bytes")
-            } else {
-                try check(!files.fileExists(atPath: configURL.path), "Official rollback did not restore config absence")
-            }
-            try check(try Data(contentsOf: authURL) == officialAuth, "Official history failure changed auth")
-            try check(try Data(contentsOf: pendingURL) == pendingData, "Official history failure changed its pending pointer")
+            let warning = try officialService.run(.official, requireClosed: false)
+            try check(warning.contains("部分旧对话未能检查") && officialService.mode() == "OpenAI 官方", "Official history warning rolled back the switch")
+            try check(try Data(contentsOf: authURL) == officialAuth, "Official history warning changed auth")
+            try check(try Data(contentsOf: pendingURL) == pendingData, "Official history warning changed its pending pointer")
         }
         let officialLogs = try files.contentsOfDirectory(at: officialService.logsDirectory, includingPropertiesForKeys: [.isRegularFileKey])
             .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
         let officialLogText = try officialLogs.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
-        try check(officialLogText.contains("write_config") && officialLogText.contains("rollback_config") && officialLogText.contains("Restored"), "Official rollback diagnostics missing")
+        try check(officialLogText.contains("write_config") && officialLogText.contains("history_warning") && !officialLogText.contains("rollback_config"), "Official history warning diagnostics missing")
+
+        let apiWarningRoot = root.appendingPathComponent("api-history-warning", isDirectory: true)
+        try files.createDirectory(at: apiWarningRoot, withIntermediateDirectories: true)
+        let apiWarningService = PlatformService(root: apiWarningRoot)
+        try originalConfig.write(to: apiWarningRoot.appendingPathComponent("config.toml"))
+        try officialAuth.write(to: apiWarningRoot.appendingPathComponent("auth.json"))
+        let apiPending = apiWarningRoot.appendingPathComponent("yilai-history-backups/pending.json")
+        try files.createDirectory(at: apiPending.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try pendingData.write(to: apiPending)
+        let apiWarning = try apiWarningService.run(.configure, key: "sk-isolated-api-warning", requireClosed: false)
+        try check(apiWarning.contains("部分旧对话未能检查") && apiWarningService.mode() == "易来 API", "API history warning rolled back the primary configuration")
+        try check(!files.fileExists(atPath: apiWarningRoot.appendingPathComponent("auth.json").path), "API history warning restored deleted auth")
+        try check(try Data(contentsOf: apiPending) == pendingData, "API history warning changed its pending pointer")
+        try files.removeItem(at: apiPending)
+        let malformedSession = apiWarningRoot.appendingPathComponent("sessions/broken.jsonl")
+        try files.createDirectory(at: malformedSession.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not-json\n".utf8).write(to: malformedSession)
+        try officialAuth.write(to: apiWarningRoot.appendingPathComponent("auth.json"))
+        let skippedWarning = try apiWarningService.run(.configure, key: "sk-isolated-api-warning", requireClosed: false)
+        try check(skippedWarning.contains("部分旧对话未能检查") && apiWarningService.mode() == "易来 API", "Skipped malformed history blocked API configuration")
+        try check(!files.fileExists(atPath: apiWarningRoot.appendingPathComponent("auth.json").path), "Skipped malformed history restored deleted auth")
+        try check(try String(contentsOf: malformedSession, encoding: .utf8) == "not-json\n", "Skipped malformed history file was modified")
     }
 
     // Reset is a reversible rename; it must preserve config bytes, auth and history.
