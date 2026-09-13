@@ -1,6 +1,6 @@
 # v3.3.12 Release Manifest
 
-Status: Windows and macOS candidates verified; publication pending.
+Status: published as the latest GitHub release after Windows/macOS verification and public download round-trip checks.
 
 Application source: merge commit c6026d3e6e59fe856842fd36a1cc8afc873c250c. CI built the identical application tree at e6e11e54505b13578c56062c0aa498f80ece9d7c.
 
@@ -21,4 +21,4 @@ Limits: history synchronization is best effort only for individual JSONL files d
 
 Validation-only macOS ZIP: 5447532 bytes, SHA-256 a7b41cc391b2e553000f0baf9349327517a1c1470b572a619c8a6b719c25057e. It is not a public release attachment.
 
-Publication plan: publish exactly the two stable program filenames above. Do not attach the validation ZIP, versioned aliases or `SHA256SUMS.txt`.
+Publication: GitHub release database ID 387774356 was published at 2026-09-13T02:53:23Z as `v3.3.12` and selected as latest. The public release contains exactly the two stable program filenames above; no validation ZIP, versioned alias or `SHA256SUMS.txt` is attached. Both assets were downloaded again and matched the candidate sizes and SHA-256 values. The two `releases/latest/download` links returned HTTP 200 with 5376000 and 6194949 bytes. The annotated tag points to ac668c364dfdb2a044745b812028e930a7705a93. Final stable copies are retained in the parent `publish/win-x64` and `publish/mac-universal` directories without removing older program versions.
