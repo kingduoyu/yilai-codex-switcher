@@ -199,9 +199,10 @@ std::wstring mode(const fs::path &root) {
     return L"配置需要检查";
   }
 }
-static std::wstring perform(Action action, const fs::path &root,
-                            const std::wstring &input, bool closed,
-                            OperationLog &log, const fs::path &runtimeOverride) {
+static RunResult perform(Action action, const fs::path &root,
+                         const std::wstring &input, bool closed,
+                         OperationLog &log,
+                         const fs::path &runtimeOverride) {
   log.step("lock_operation", "检查其他配置器操作");
   char *lockError = nullptr;
   std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> operationLock(
@@ -238,9 +239,10 @@ static std::wstring perform(Action action, const fs::path &root,
     return false;
   };
   if (action == Action::UnifyHistory) {
-    return unifyHistory()
-               ? L"本地历史已统一为 custom。"
-               : L"旧易来对话已尽量同步，部分异常会话已跳过。";
+    const bool complete = unifyHistory();
+    return {complete ? L"本地历史已统一为 custom。"
+                     : L"旧易来对话已尽量同步，部分异常会话已跳过。",
+            !complete};
   }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
@@ -261,15 +263,16 @@ static std::wstring perform(Action action, const fs::path &root,
            "配置已被其他程序改动，请关闭后重试。");
     atomic(config, after);
     const bool historyComplete = checkHistoryBestEffort();
-    return historyComplete
-               ? L"已切换到官方，旧对话检查完成。请重新打开 Codex。"
-               : L"已切换到官方。部分旧对话未能检查，连接配置不受影响。请重新打开 Codex。";
+    return {historyComplete
+                ? L"已切换到官方，旧对话检查完成。请重新打开 Codex。"
+                : L"已切换到官方。部分旧对话未能检查，连接配置不受影响。请重新打开 Codex。",
+            !historyComplete};
   }
   if (action == Action::Cleanup) {
     log.step("rename_config", "停用旧配置");
     regular(config);
     if (!fs::exists(config))
-      return L"没有需要重置的配置。填写 API Key 后即可切换。";
+      return {L"没有需要重置的配置。填写 API Key 后即可切换。", false};
     auto disabled = config;
     disabled += L".disabled-" +
                 std::to_wstring(std::chrono::high_resolution_clock::now()
@@ -277,18 +280,7 @@ static std::wstring perform(Action action, const fs::path &root,
                                     .count());
     if (!MoveFileW(config.c_str(), disabled.c_str()))
       throw std::runtime_error(windowsFailure("无法停用旧配置", GetLastError()));
-    return L"旧配置已停用。填写 API Key 后可重新切换。";
-  }
-  std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(nullptr, yilai_sources_finish);
-  // Runtime source diagnostics are opt-in for maintenance/tests, never the UI path.
-  if ((action == Action::Configure) && !runtimeOverride.empty()) {
-    log.step("inspect_sources", "识别当前生效来源");
-    char *sourceError = nullptr;
-    sources.reset(yilai_sources_prepare(utf8(root.wstring()).c_str(), utf8(runtimeOverride.wstring()).c_str(), &sourceError));
-    Buffer sourceDetail(sourceError, yilai_config_free);
-    ensure(sources != nullptr, sourceDetail ? sourceDetail.get() : "无法识别配置来源");
-    Buffer summary(yilai_sources_summary(sources.get()), yilai_config_free);
-    yilai_diagnostic_event(log.context, "source_plan", summary ? summary.get() : "来源计划已生成");
+    return {L"旧配置已停用。填写 API Key 后可重新切换。", false};
   }
   log.step("prepare_config", "准备连接配置");
   regular(config);
@@ -328,13 +320,6 @@ static std::wstring perform(Action action, const fs::path &root,
   const auto authBefore = hadAuth ? read(authPath) : "";
   bool wroteConfig = false, removedAuth = false, wroteCatalog = false;
   try {
-    if (sources) {
-      log.step("clear_sources", "清除旧连接覆盖");
-      char *sourceError = nullptr;
-      auto ok = yilai_sources_apply(sources.get(), &sourceError);
-      Buffer sourceDetail(sourceError, yilai_config_free);
-      ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源清理失败");
-    }
     log.step("write_catalog", "写入三个指定模型");
     ensure(fs::exists(catalogPath) == hadCatalog && (hadCatalog ? read(catalogPath) : "") == catalogBefore, "模型目录已被其他程序改动");
     atomic(catalogPath, catalogAfter);
@@ -354,13 +339,6 @@ static std::wstring perform(Action action, const fs::path &root,
     }
     ensure(!fs::exists(authPath),
            "登录文件被重新创建，请完全退出 Codex 和 CC-Switch。");
-    if (sources) {
-      log.step("verify_sources", "核验新连接实际生效");
-      char *sourceError = nullptr;
-      auto ok = yilai_sources_verify(sources.get(), utf8(key).c_str(), &sourceError);
-      Buffer sourceDetail(sourceError, yilai_config_free);
-      ensure(ok != 0, sourceDetail ? sourceDetail.get() : "来源核验失败");
-    }
   } catch (...) {
     const auto failedStage = log.stage, failedLabel = log.label;
     std::string originalError = "未知错误";
@@ -404,27 +382,53 @@ static std::wstring perform(Action action, const fs::path &root,
       restored = false;
       yilai_diagnostic_event(log.context, "rollback_auth", e.what());
     }
-    if (sources) {
-      log.step("rollback_sources", "还原配置来源");
-      char *sourceError = nullptr;
-      auto ok = yilai_sources_rollback(sources.get(), &sourceError);
-      Buffer sourceDetail(sourceError, yilai_config_free);
-      if (!ok) restored = false;
-      yilai_diagnostic_event(log.context, "rollback_sources", ok ? "还原完成" : (sourceDetail ? sourceDetail.get() : "来源恢复失败"));
-    }
     log.step(failedStage.c_str(), failedLabel.c_str());
     if (!restored)
       throw std::runtime_error("切换未完成且回滚不完整，请保留历史备份并联系支持。原始原因：" + originalError);
     throw;
   }
+  std::string effectiveIssue;
+  if (closed || !runtimeOverride.empty()) {
+    log.step("verify_effective", "核验最终生效配置");
+    char *sourceError = nullptr;
+    const auto runtime = runtimeOverride.empty() ? std::string() : utf8(runtimeOverride.wstring());
+    std::unique_ptr<YilaiConfigSources, decltype(&yilai_sources_finish)> sources(
+        yilai_sources_inspect(utf8(root.wstring()).c_str(), runtime.c_str(),
+                              &sourceError),
+        yilai_sources_finish);
+    Buffer sourceDetail(sourceError, yilai_config_free);
+    if (!sources) {
+      effectiveIssue = sourceDetail ? sourceDetail.get()
+                                    : "无法读取 Codex 最终配置";
+    } else {
+      sourceError = nullptr;
+      const auto ok = yilai_sources_verify(sources.get(), utf8(key).c_str(),
+                                           &sourceError);
+      Buffer verifyDetail(sourceError, yilai_config_free);
+      if (!ok)
+        effectiveIssue = verifyDetail ? verifyDetail.get()
+                                      : "无法确认最终生效配置";
+    }
+  }
   const bool historyComplete = checkHistoryBestEffort();
-  return historyComplete
-             ? L"API 已配置，生图已启用。请重新打开 Codex。"
-             : L"API 已配置，生图已启用。部分旧对话未能检查，不影响当前配置。请重新打开 Codex。";
+  if (!effectiveIssue.empty()) {
+    Buffer clean(yilai_diagnostic_sanitize(log.context, effectiveIssue.c_str()),
+                 yilai_config_free);
+    auto message = L"API 已配置并保留，但功能探测未完全通过：" +
+                   wide(clean ? clean.get() : effectiveIssue) +
+                   L"。不会回滚连接，请截图此提示。";
+    if (!historyComplete)
+      message += L" 部分旧对话也未能检查。";
+    return {message, true};
+  }
+  return {historyComplete
+              ? L"API 已配置，最终探测确认连接、模型和生图均已生效。请重新打开 Codex。"
+              : L"API 已配置，最终探测已通过。部分旧对话未能检查，不影响当前连接。请重新打开 Codex。",
+          !historyComplete};
 }
-std::wstring run(Action action, const fs::path &root, const std::wstring &input,
-                 bool closed, const fs::path &runtimeOverride,
-                 std::function<void(const std::wstring &)> progress) {
+RunResult run(Action action, const fs::path &root, const std::wstring &input,
+              bool closed, const fs::path &runtimeOverride,
+              std::function<void(const std::wstring &)> progress) {
   const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::UnifyHistory ? "unify_history" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
@@ -439,8 +443,7 @@ std::wstring run(Action action, const fs::path &root, const std::wstring &input,
     std::string message =
         log.label + "失败：" + (clean ? clean.get() : "错误详情不可用");
     yilai_diagnostic_event(log.context, log.stage.c_str(), message.c_str());
-    if (!yilai_diagnostic_finish(log.context, 0, message.c_str()))
-      message += " 诊断日志未能完整保存，请保留当前错误信息。";
+    yilai_diagnostic_finish(log.context, 0, message.c_str());
     throw std::runtime_error(message);
   } catch (...) {
     yilai_diagnostic_end(log.context, 0, "未知错误");
@@ -570,7 +573,7 @@ bool selfTest(std::wstring &error) {
             }
           });
       ensure(injected && sawOfficial && mode(root) == L"OpenAI 官方" &&
-                 result.find(L"部分旧对话未能检查") != std::wstring::npos &&
+                  result.message.find(L"部分旧对话未能检查") != std::wstring::npos &&
                  fs::exists(root / L"config.toml") &&
                  read(root / L"auth.json") == auth &&
                  read(root / L"sessions/example.jsonl") == history,
@@ -589,7 +592,7 @@ bool selfTest(std::wstring &error) {
           }
         });
     ensure(apiHistoryInjected && mode(root) == L"易来 API" &&
-               apiHistoryResult.find(L"部分旧对话未能检查") !=
+                apiHistoryResult.message.find(L"部分旧对话未能检查") !=
                    std::wstring::npos &&
                !fs::exists(root / L"auth.json") &&
                read(root / L"yilai-model-catalog.json") ==
@@ -601,7 +604,7 @@ bool selfTest(std::wstring &error) {
     const auto skippedHistoryResult =
         run(Action::Configure, root, L"sk-test", false);
     ensure(mode(root) == L"易来 API" &&
-               skippedHistoryResult.find(L"部分旧对话未能检查") !=
+                skippedHistoryResult.message.find(L"部分旧对话未能检查") !=
                    std::wstring::npos &&
                !fs::exists(root / L"auth.json") &&
                read(root / L"sessions/broken.jsonl") == "not-json\n",
@@ -624,16 +627,8 @@ bool selfTest(std::wstring &error) {
         ++preserved;
     ensure(preserved == 1, "Reset did not preserve configuration bytes");
     run(Action::Cleanup, root, L"", false);
-    std::string diagnostics;
-    for (const auto &entry :
-         fs::directory_iterator(root / L"yilai-switcher-logs"))
-      if (entry.is_regular_file())
-        diagnostics += read(entry.path());
-    ensure(diagnostics.find("sk-test") == std::string::npos,
-           "Diagnostics leaked API key");
-    ensure(diagnostics.find("rollback_config") != std::string::npos &&
-               diagnostics.find("delete_auth") != std::string::npos,
-           "Diagnostics omitted failed stage or rollback");
+    ensure(!fs::exists(root / L"yilai-switcher-logs"),
+           "Error-only diagnostics created a log directory");
     return true;
   } catch (const std::exception &e) {
     error = wide(e.what());

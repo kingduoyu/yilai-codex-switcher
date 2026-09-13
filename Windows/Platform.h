@@ -4,11 +4,15 @@
 #include <functional>
 namespace app {
 enum class Action { Configure, Official, UnifyHistory, Cleanup };
+struct RunResult {
+  std::wstring message;
+  bool warning = false;
+};
 std::filesystem::path home();
 std::wstring mode(const std::filesystem::path &home);
-std::wstring run(Action action, const std::filesystem::path &home,
-                 const std::wstring &key = L"", bool requireClosed = true,
-                 const std::filesystem::path &runtimeOverride = {},
-                 std::function<void(const std::wstring &)> progress = {});
+RunResult run(Action action, const std::filesystem::path &home,
+              const std::wstring &key = L"", bool requireClosed = true,
+              const std::filesystem::path &runtimeOverride = {},
+              std::function<void(const std::wstring &)> progress = {});
 bool selfTest(std::wstring &error);
 } // namespace app

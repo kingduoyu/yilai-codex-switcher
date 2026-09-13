@@ -13,6 +13,7 @@ driver = str(Path(sys.argv[1]).resolve())
 runtime = '--auto-runtime' if sys.argv[2] == '--auto-runtime' else str(Path(sys.argv[2]).resolve())
 root = Path(tempfile.mkdtemp(prefix="source-test-", dir=repo / "dist")).resolve()
 facts = []
+ccs_settings = root / 'ccs-settings.json'
 
 def setup(name, trusted=True, nested=False):
     base = root / name
@@ -45,57 +46,67 @@ def setup(name, trusted=True, nested=False):
 
 def run(home, action='configure', success=True):
     process = subprocess.run([driver,action,str(home),runtime], capture_output=True, encoding='utf8', timeout=100,
-        env=dict(os.environ,CODEX_HOME=str(home),CODEX_SQLITE_HOME=str(home)))
+        env=dict(os.environ,CODEX_HOME=str(home),CODEX_SQLITE_HOME=str(home),YILAI_SWITCHER_CCS_SETTINGS=str(ccs_settings)))
     if success:
         assert process.returncode == 0, process.stderr
     else:
         assert process.returncode != 0, 'Expected a rejected operation'
-    logs='\n'.join(p.read_text(encoding='utf8') for p in (home/'yilai-switcher-logs').glob('*.log'))
     for secret in ['synthetic-user-secret','synthetic-project-secret','synthetic-auth-secret','synthetic-shadow-secret','sk-isolated-test-only']:
-        assert secret not in logs and secret not in process.stderr, 'Source diagnostics exposed a credential'
-    return process,logs
+        assert secret not in process.stdout and secret not in process.stderr, 'Displayed source diagnostics exposed a credential'
+    assert not (home/'yilai-switcher-logs').exists(), 'Final probing created process logs'
+    return process
 
 try:
     fresh=root/'fresh-home';fresh.mkdir()
-    run(fresh)
+    completed=run(fresh)
+    assert completed.stdout.startswith('OK:')
     facts.append('first-use empty user directory supports API configuration with effective verification')
     home,source,current=setup('trusted',nested=True)
+    before_source=source.read_bytes();before_current=(current/'.codex/config.toml').read_bytes()
     unused=(home/'unused.config.toml').read_bytes()
-    run(home)
-    cleared=tomllib.loads(source.read_text(encoding='utf8'))
-    assert 'model_provider' not in cleared and 'image_generation' not in cleared.get('features',{})
-    assert cleared['model_reasoning_effort']=='high' and cleared['features']['web_search_request'] is True
-    assert 'custom' not in cleared.get('model_providers',{})
-    assert 'model_provider' not in tomllib.loads((current/'.codex/config.toml').read_text(encoding='utf8'))
+    completed=run(home)
+    assert completed.stdout.startswith('WARNING:') and '生图开关未生效' in completed.stdout
+    assert source.read_bytes()==before_source and (current/'.codex/config.toml').read_bytes()==before_current
     assert (home/'unused.config.toml').read_bytes()==unused
     assert not (home/'auth.json').exists()
-    assert (home/'yilai-source-backups').exists()
-    facts.append('trusted parent and child overrides removed; unrelated settings and unused profile retained; API actual values verified')
+    assert tomllib.loads((home/'config.toml').read_text(encoding='utf8'))['model_provider']=='custom'
+    facts.append('trusted parent and child overrides are reported without modification or API rollback')
 
     home,source,current=setup('untrusted',trusted=False)
     before=source.read_bytes()
-    run(home)
+    completed=run(home)
     assert source.read_bytes()==before
+    assert completed.stdout.startswith('OK:')
     facts.append('untrusted project layer remains byte-identical and is not treated as active')
 
     home,source,current=setup('rollback')
     before=source.read_bytes();config=(home/'config.toml').read_bytes();auth=(home/'auth.json').read_bytes()
     (home/'sessions').mkdir();(home/'sessions/broken.jsonl').write_text('malformed-history',encoding='utf8')
-    completed,logs=run(home)
-    assert source.read_bytes()!=before and (home/'config.toml').read_bytes()!=config and not (home/'auth.json').exists()
-    assert 'verify_sources' in logs and 'history_warning' in logs and 'rollback_sources' not in logs
+    completed=run(home)
+    assert source.read_bytes()==before and (home/'config.toml').read_bytes()!=config and not (home/'auth.json').exists()
+    assert completed.stdout.startswith('WARNING:') and '部分旧对话' in completed.stdout
     assert (home/'sessions/broken.jsonl').read_text(encoding='utf8')=='malformed-history'
     assert not (home/'yilai-history-backups').exists()
     assert not list(home.glob('*.sqlite*')), 'Configuration probe created databases in the target home'
     assert not (home/'yilai-source-backups/pending.json').exists()
-    facts.append('API configuration skips malformed history, records a warning, and commits source edits without rollback')
+    facts.append('API configuration keeps source conflicts, skips malformed history, and reports both without rollback')
 
     home,source,current=setup('invalid-project')
     source.write_text('[invalid TOML',encoding='utf8')
-    config=(home/'config.toml').read_bytes();auth=(home/'auth.json').read_bytes()
-    run(home,success=False)
-    assert source.read_text(encoding='utf8')=='[invalid TOML' and (home/'config.toml').read_bytes()==config and (home/'auth.json').read_bytes()==auth
-    facts.append('unreadable effective source blocks before configuration/auth mutation')
+    completed=run(home)
+    assert completed.stdout.startswith('WARNING:')
+    assert source.read_text(encoding='utf8')=='[invalid TOML'
+    assert tomllib.loads((home/'config.toml').read_text(encoding='utf8'))['model_provider']=='custom'
+    assert not (home/'auth.json').exists()
+    facts.append('unreadable effective source is reported after the API configuration remains committed')
+
+    mismatch=root/'ccs-mismatch-home';mismatch.mkdir()
+    ccs_settings.write_text(json.dumps({'codexConfigDir':str(root/'different-codex-home')}),encoding='utf8')
+    completed=run(mismatch)
+    assert completed.stdout.startswith('WARNING:') and '两个程序可能在读取不同配置' in completed.stdout
+    assert tomllib.loads((mismatch/'config.toml').read_text(encoding='utf8'))['model_provider']=='custom'
+    ccs_settings.unlink()
+    facts.append('CCS custom Codex directory mismatch is shown without rolling back the configured API')
     result={'status':'passed','root':str(root),'passed':facts}
     (root/'result.json').write_text(json.dumps(result,indent=2),encoding='utf8');print(json.dumps(result,indent=2))
 except Exception as error:

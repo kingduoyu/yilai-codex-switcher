@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -132,6 +133,128 @@ Json probe(const fs::path &runtime, const fs::path &home, const fs::path &cwd) {
     return result;
   } catch (const Json::exception &) { throw std::runtime_error("Codex 配置来源响应格式不受支持。"); }
 }
+std::string sourceName(const Json &loaded, const std::string &field) {
+  if (!loaded.contains("origins") || !loaded["origins"].is_object() ||
+      !loaded["origins"].contains(field))
+    return {};
+  const auto &origin = loaded["origins"][field];
+  if (!origin.is_object() || !origin.contains("name"))
+    return {};
+  const auto &name = origin["name"];
+  if (name.is_string())
+    return name.get<std::string>();
+  if (!name.is_object())
+    return {};
+  const auto type = name.value("type", "");
+  if (name.contains("file") && name["file"].is_string())
+    return name["file"].get<std::string>();
+  if (name.contains("dotCodexFolder") && name["dotCodexFolder"].is_string())
+    return (fs::u8path(name["dotCodexFolder"].get<std::string>()) /
+            "config.toml")
+        .u8string();
+  if (type == "commandLine")
+    return "Codex 启动参数";
+  if (type == "profile") {
+    const auto profile = name.value("profile", "");
+    return profile.empty() ? "Codex profile" : "Codex profile：" + profile;
+  }
+  if (type == "managed" || type == "system")
+    return "系统或管理员配置";
+  if (type == "project")
+    return "项目 .codex/config.toml";
+  if (type == "user")
+    return "用户 config.toml";
+  return type;
+}
+std::string withSource(const Json &loaded, const std::string &field,
+                       const std::string &message) {
+  const auto source = sourceName(loaded, field);
+  return source.empty() ? message : message + "（来源：" + source + "）";
+}
+std::string joined(const std::vector<std::string> &values) {
+  std::ostringstream output;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i)
+      output << "；";
+    output << values[i];
+  }
+  return output.str();
+}
+fs::path userHome() {
+#ifdef _WIN32
+  const auto count = GetEnvironmentVariableW(L"USERPROFILE", nullptr, 0);
+  if (!count)
+    return {};
+  std::wstring value(count, L'\0');
+  const auto length = GetEnvironmentVariableW(L"USERPROFILE", value.data(), count);
+  if (!length || length >= count)
+    return {};
+  value.resize(length);
+  return fs::path(value);
+#else
+  const char *value = std::getenv("HOME");
+  return value && *value ? fs::u8path(value) : fs::path();
+#endif
+}
+fs::path testCcsSettingsPath() {
+#ifdef _WIN32
+  const auto count =
+      GetEnvironmentVariableW(L"YILAI_SWITCHER_CCS_SETTINGS", nullptr, 0);
+  if (!count)
+    return {};
+  std::wstring value(count, L'\0');
+  const auto length = GetEnvironmentVariableW(
+      L"YILAI_SWITCHER_CCS_SETTINGS", value.data(), count);
+  if (!length || length >= count)
+    return {};
+  value.resize(length);
+  return fs::path(value);
+#else
+  const char *value = std::getenv("YILAI_SWITCHER_CCS_SETTINGS");
+  return value && *value ? fs::u8path(value) : fs::path();
+#endif
+}
+fs::path resolveUserPath(const std::string &value, const fs::path &home) {
+  if (value == "~")
+    return home;
+  if (value.rfind("~/", 0) == 0 || value.rfind("~\\", 0) == 0)
+    return home / fs::u8path(value.substr(2));
+  return fs::u8path(value);
+}
+std::string ccsDirectoryIssue(const fs::path &configuredHome) {
+  const auto osHome = userHome();
+  if (osHome.empty())
+    return {};
+  const auto testSettings = testCcsSettingsPath();
+  const auto settingsPath = testSettings.empty()
+                                ? osHome / ".cc-switch" / "settings.json"
+                                : testSettings;
+  if (!fs::exists(settingsPath))
+    return {};
+  auto settings = Json::parse(read(settingsPath), nullptr, false);
+  if (settings.is_discarded() || !settings.is_object())
+    return "CCS 的 settings.json 无法解析，不能确认它使用的 Codex 配置目录";
+  if (!settings.contains("codexConfigDir") ||
+      settings["codexConfigDir"].is_null())
+    return {};
+  if (!settings["codexConfigDir"].is_string())
+    return "CCS 的 codexConfigDir 格式无效";
+  auto raw = settings["codexConfigDir"].get<std::string>();
+  raw.erase(raw.begin(), std::find_if(raw.begin(), raw.end(), [](unsigned char c) {
+              return !std::isspace(c);
+            }));
+  raw.erase(std::find_if(raw.rbegin(), raw.rend(), [](unsigned char c) {
+              return !std::isspace(c);
+            }).base(), raw.end());
+  if (raw.empty())
+    return {};
+  const auto ccsHome = resolveUserPath(raw, osHome);
+  if (same(ccsHome, configuredHome))
+    return {};
+  return "CCS 的 Codex 配置目录是 " + text(ccsHome) +
+         "，本次配置目录是 " + text(configuredHome) +
+         "；两个程序可能在读取不同配置";
+}
 struct Edit { fs::path path; std::string before, after; };
 void restoreEdits(const std::vector<Edit> &edits) {
   std::vector<std::string> errors;
@@ -175,6 +298,28 @@ struct YilaiConfigSources {
   Json origins = Json::array();
   bool applied = false, verified = false;
 };
+extern "C" YilaiConfigSources *yilai_sources_inspect(const char *homeText,
+                                                       const char *runtimeText,
+                                                       char **error) {
+  if (error) *error = nullptr;
+  try {
+    require(homeText && *homeText, "缺少配置目录。");
+    auto result = std::make_unique<YilaiConfigSources>();
+    result->home = fs::weakly_canonical(fs::absolute(fs::u8path(homeText)));
+    result->roots = contexts(result->home);
+    result->runtime = runtimeText && *runtimeText
+                          ? fs::u8path(runtimeText)
+                          : yilai_sources::locate_runtime();
+    require(!result->runtime.empty(),
+            "未找到 Codex 运行时，无法核验最终配置。");
+    return result.release();
+  } catch (const std::exception &e) {
+    failure(error, e.what());
+  } catch (...) {
+    failure(error, "最终配置探测初始化失败。");
+  }
+  return nullptr;
+}
 extern "C" YilaiConfigSources *yilai_sources_prepare(const char *homeText, const char *runtimeText, char **error) {
   if (error) *error = nullptr;
   try {
@@ -213,7 +358,9 @@ extern "C" YilaiConfigSources *yilai_sources_prepare(const char *homeText, const
           (fields.contains("features") && fields["features"].is_object() && fields["features"].contains("image_generation")) ||
           (fields.contains("model_providers") && fields["model_providers"].is_object() && fields["model_providers"].contains("custom"));
         if (!relevant) continue;
-        require(allowed && path.is_absolute(), "连接被不可自动修改的配置来源覆盖（" + type + "），请先移除对应启动覆盖或联系管理员。");
+        // Read-only diagnosis still reports command-line/managed layers. Only
+        // known local files are eligible for the legacy maintenance API.
+        if (!allowed || !path.is_absolute()) continue;
         if (std::any_of(result->edits.begin(), result->edits.end(), [&](auto &e) { return same(e.path, path); })) continue;
         auto before = read(path); char *detail = nullptr;
         std::unique_ptr<char, decltype(&yilai_config_free)> after(yilai_clear_connection_overrides(before.c_str(), &detail), yilai_config_free), errorText(detail, yilai_config_free);
@@ -262,20 +409,90 @@ extern "C" int yilai_sources_verify(YilaiConfigSources *c, const char *key, char
   if (error) *error = nullptr;
   try {
     require(c != nullptr, "缺少来源计划。");
+    std::vector<std::string> issues;
+    const auto directoryIssue = ccsDirectoryIssue(c->home);
+    if (!directoryIssue.empty())
+      issues.push_back(directoryIssue);
     for (auto &cwd : c->roots) {
-      auto loaded = probe(c->runtime, c->home, cwd); const auto &config = loaded.at("config");
-      require(config.value("model_provider", "openai") == "custom", "连接选择仍被覆盖，未确认切换成功：" + text(cwd));
-      const auto &provider = config.at("model_providers").at("custom");
-      require(!provider.contains("env_key") || provider["env_key"].is_null() || provider["env_key"] == "", "认证仍受其他来源的环境变量配置影响。");
-      require(!provider.value("requires_openai_auth", false), "认证方式仍被其他来源覆盖：" + text(cwd));
-      require(provider.value("base_url", "") == "https://api.yilai-ai.com" && provider.value("experimental_bearer_token", "") == (key ? key : ""), "地址或认证凭据未按本次配置生效。");
-      require(config.at("features").value("image_generation", false), "生图开关仍被其他来源覆盖。");
-      require(provider.at("http_headers").value("x-openai-actor-authorization", "") == "local-image-extension", "生图连接设置未生效。");
-      for (const char *field : {"forced_login_method", "forced_chatgpt_workspace_id", "openai_base_url", "chatgpt_base_url"})
-        require(!loaded.value("origins", Json::object()).contains(field) || !config.contains(field) || config[field].is_null() || config[field] == "", std::string("连接仍受覆盖字段影响：") + field);
+      auto loaded = probe(c->runtime, c->home, cwd);
+      const auto &config = loaded.at("config");
+      const auto prefix = c->roots.size() > 1 ? "项目 " + text(cwd) + "：" : "";
+      const auto providerId = config.value("model_provider", "openai");
+      if (providerId != "custom") {
+        issues.push_back(prefix + withSource(
+            loaded, "model_provider",
+            "当前连接仍是 " + providerId + "，易来 API 未成为最终连接"));
+        continue;
+      }
+      const auto *providers = config.contains("model_providers") &&
+                                      config["model_providers"].is_object()
+                                  ? &config["model_providers"]
+                                  : nullptr;
+      const auto *provider = providers && providers->contains("custom") &&
+                                     (*providers)["custom"].is_object()
+                                 ? &(*providers)["custom"]
+                                 : nullptr;
+      if (!provider) {
+        issues.push_back(prefix + withSource(
+            loaded, "model_providers.custom", "缺少 custom 连接定义"));
+        continue;
+      }
+      if (provider->contains("env_key") && !(*provider)["env_key"].is_null() &&
+          (*provider)["env_key"] != "")
+        issues.push_back(prefix + withSource(
+            loaded, "model_providers.custom.env_key",
+            "认证仍被环境变量配置覆盖"));
+      if (provider->value("requires_openai_auth", false))
+        issues.push_back(prefix + withSource(
+            loaded, "model_providers.custom.requires_openai_auth",
+            "认证方式仍要求 OpenAI 登录"));
+      if (provider->value("base_url", "") != "https://api.yilai-ai.com")
+        issues.push_back(prefix + withSource(
+            loaded, "model_providers.custom.base_url",
+            "易来 API 地址未成为最终地址"));
+      if (provider->value("experimental_bearer_token", "") !=
+          (key ? key : ""))
+        issues.push_back(prefix + withSource(
+            loaded, "model_providers.custom.experimental_bearer_token",
+            "本次 API Key 未成为最终认证凭据"));
+      const bool imageEnabled =
+          config.contains("features") && config["features"].is_object() &&
+          config["features"].value("image_generation", false);
+      if (!imageEnabled)
+        issues.push_back(prefix + withSource(
+            loaded, "features.image_generation", "生图开关未生效"));
+      const bool imageHeader =
+          provider->contains("http_headers") &&
+          (*provider)["http_headers"].is_object() &&
+          (*provider)["http_headers"].value(
+              "x-openai-actor-authorization", "") ==
+              "local-image-extension";
+      if (!imageHeader)
+        issues.push_back(prefix + withSource(
+            loaded,
+            "model_providers.custom.http_headers.x-openai-actor-authorization",
+            "生图授权配置未生效"));
+      const auto expectedCatalog = (c->home / "yilai-model-catalog.json").u8string();
+      if (config.value("model_catalog_json", "") != expectedCatalog)
+        issues.push_back(prefix + withSource(
+            loaded, "model_catalog_json", "三个指定模型的目录未生效"));
+      for (const char *field : {"forced_login_method",
+                                "forced_chatgpt_workspace_id",
+                                "openai_base_url", "chatgpt_base_url"}) {
+        if (loaded.value("origins", Json::object()).contains(field) &&
+            config.contains(field) && !config[field].is_null() &&
+            config[field] != "")
+          issues.push_back(prefix + withSource(
+              loaded, field, std::string("存在连接限制字段：") + field));
+      }
     }
-    c->verified = true; return 1;
-  } catch (const Json::exception &) { failure(error, "无法从 Codex 返回值确认新连接，切换未完成。"); }
+    if (!issues.empty()) {
+      failure(error, ("最终探测发现：" + joined(issues)).c_str());
+      return 0;
+    }
+    c->verified = true;
+    return 1;
+  } catch (const Json::exception &) { failure(error, "Codex 返回的最终配置无法识别。"); }
   catch (const std::exception &e) { failure(error, e.what()); } catch (...) { failure(error, "配置生效核验失败。"); }
   return 0;
 }

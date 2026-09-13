@@ -6,31 +6,28 @@ final class Controller: ObservableObject {
     @Published var reveal = false
     @Published var busy = false
     @Published var failed = false
+    @Published var warning = false
     @Published var message = "准备就绪。填写 API Key，一键启用易来 API 和生图。"
     @Published var mode = ""
     let service = PlatformService()
 
     init() { mode = service.mode() }
 
-    func showLogs() {
-        if !NSWorkspace.shared.open(service.logsDirectory) {
-            message = "日志目录暂时无法打开。可能尚未生成日志，或目录没有访问权限。"
-        }
-    }
-
     func execute(_ operation: Operation) {
         guard !busy else { return }
         busy = true
         failed = false
+        warning = false
         message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : operation == .unifyHistory ? "正在统一本地历史，首次需扫描…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let outcome: Result<String, Error> = Result { try service.run(operation, key: token) }
+            let outcome: Result<OperationOutcome, Error> = Result { try service.run(operation, key: token) }
             DispatchQueue.main.async { [self] in
                 busy = false
                 switch outcome {
                 case .success(let result):
-                    message = result
+                    message = result.message
+                    warning = result.warning
                     if operation == .configure { key = "" }
                 case .failure(let error):
                     failed = true
@@ -131,18 +128,18 @@ struct Content: View {
                 if model.busy {
                     ProgressView().controlSize(.small).padding(.top, 1)
                 } else {
-                    Image(systemName: model.failed ? "exclamationmark.circle" : "checkmark.circle")
-                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                    Image(systemName: model.failed ? "exclamationmark.circle" : model.warning ? "exclamationmark.triangle" : "checkmark.circle")
+                        .foregroundStyle(model.failed ? Color.red : model.warning ? Color.orange : Color.secondary)
                         .padding(.top, 1)
                 }
                 ScrollView {
                     Text(model.message)
                         .font(.system(size: 13))
-                        .foregroundStyle(model.failed ? Color.red : Color.secondary)
+                        .foregroundStyle(model.failed ? Color.red : model.warning ? Color.orange : Color.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: 58)
+                .frame(height: 92)
             }
 
             Spacer(minLength: 0)
@@ -151,13 +148,6 @@ struct Content: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if model.failed {
-                    Button("查看日志") { model.showLogs() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .padding(.trailing, 12)
-                }
                 Button("重置配置") { model.execute(.cleanup) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
@@ -166,7 +156,7 @@ struct Content: View {
             }
         }
         .padding(28)
-        .frame(width: 760, height: 520)
+        .frame(width: 760, height: 560)
         .background(Color(red: 245 / 255, green: 247 / 255, blue: 251 / 255))
         .disabled(model.busy)
         .preferredColorScheme(.light)
@@ -176,8 +166,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.12"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.title = "易来 Codex 配置器 v3.3.13"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in

@@ -8,6 +8,10 @@ typedef struct YilaiConfigSources YilaiConfigSources;
  * runtime may be empty to locate an installed runtime. All errors/results are
  * malloc-owned. No full runtime response or credentials are returned as logs. */
 YilaiConfigSources *yilai_sources_prepare(const char *home, const char *runtime, char **error);
+/* Read-only variant for post-commit UI diagnosis. It never recovers, backs up,
+ * or rewrites source files. */
+YilaiConfigSources *yilai_sources_inspect(const char *home, const char *runtime,
+                                          char **error);
 char *yilai_sources_summary(const YilaiConfigSources *context);
 int yilai_sources_apply(YilaiConfigSources *context, char **error);
 int yilai_sources_verify(YilaiConfigSources *context, const char *key, char **error);
