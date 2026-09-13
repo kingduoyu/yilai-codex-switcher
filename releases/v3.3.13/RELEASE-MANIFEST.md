@@ -16,9 +16,11 @@ Limits: core write failures may still roll back the current operation when conne
 
 | Release asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| YilaiCodexSwitcher.exe | 5355008 | ad6617048106233d2ecdea11e127a7bba1c3f8201f4a09340f199634cb826933 |
-| YilaiCodexSwitcher-macOS-universal.dmg | 6175308 | 234d7251aa4b6843ba716e0ca260a8d139fb46d9c1748a54b100e28c18538af6 |
+| YilaiCodexSwitcher-v3.3.13.exe | 5355008 | ad6617048106233d2ecdea11e127a7bba1c3f8201f4a09340f199634cb826933 |
+| YilaiCodexSwitcher-v3.3.13-macOS.dmg | 6175308 | 234d7251aa4b6843ba716e0ca260a8d139fb46d9c1748a54b100e28c18538af6 |
 
 Validation-only macOS ZIP: 5422710 bytes, SHA-256 42a1dcadd1a3ca88ad5a1dffca22eeece99df41ed1259678ca942fa1a3851293.
+
+Naming update on 2026-09-13: renamed the existing release assets to the versioned names in the table above, without changing their contents. The public download entry is now the GitHub Releases page; previous unversioned asset links are no longer the supported entry.
 
 Publication: GitHub release database ID 387910354 was published at 2026-09-13T13:33:14Z as v3.3.13 and selected as latest. Both releases/latest/download links returned HTTP 200, and the downloaded files matched the candidate sizes and SHA-256 values above. The annotated tag points to 3fa0c0a0d185a1f19e7bbc6df7b3851d1345baa8. Final stable and versioned copies are retained in the parent publish/win-x64 and publish/mac-universal directories.
