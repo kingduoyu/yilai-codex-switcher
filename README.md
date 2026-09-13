@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.11
+# 易来 Codex 配置器 v3.3.12
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，切换时自动检查旧易来对话归属，无需额外按钮。
 
@@ -8,7 +8,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 1. 完全退出 Codex 和 CC-Switch，包括后台进程。
 2. 填写 API Key，点击 **配置易来 API · 启用生图**，完成后重新打开 Codex。
-3. 旧易来对话检查自动随切换完成；只有 `yilai` 记录才修复，已是 `custom` 或其他来源的不改写。
+3. 旧易来对话检查在连接配置成功后自动执行；只有 `yilai` 记录才修复，已是 `custom` 或其他来源的不改写。异常会话会跳过，不影响当前连接。
 4. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
@@ -25,7 +25,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 API/官方切换时自动检查旧易来 yilai 对话：只将 JSONL 第一条 session_meta 和 SQLite 索引中的 yilai 改成 custom。openai、ccswitch、custom 等其他来源只读元数据前缀，不读取完整正文、不迁移；正文、标题、归档和父对话元数据不修改。不增加历史按钮。
 
-迁移前备份到 yilai-history-backups，失败恢复，已是 custom 的不改写。待迁移文件仍做完整 JSONL 校验；重复检查走前缀和待迁移数据库行查询，不再反复读取大体积正文或完整数据库。切换不启动 Codex 做配置来源或回读核验。官方当前路由与 API 均采用 custom，认证方式随当前选择变化；没有官方 auth.json 时需重新登录。
+连接配置、模型目录和登录处理是主流程，完成后不因本地历史异常回滚。历史同步按文件尽量执行：重复 session ID 不再阻断；无法读取、JSONL 损坏、备份或写入失败的单个会话会记录告警并跳过，其余会话继续。成功迁移的内容备份到 yilai-history-backups，已是 custom 的不改写；待迁移文件仍做完整 JSONL 校验。重复检查走前缀和待迁移数据库行查询，不再反复读取大体积正文或完整数据库。切换不启动 Codex 做配置来源或回读核验。官方当前路由与 API 均采用 custom，认证方式随当前选择变化；没有官方 auth.json 时需重新登录。
 
 日志在 CODEX_HOME/yilai-switcher-logs；重置只改名 config.toml。未测试生产官方发送，不声明完整复制 CCS 账号管理和自动化功能。
 
@@ -45,4 +45,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.11 构建、附件与发布验证见 releases/v3.3.11/RELEASE-MANIFEST.md。
+v3.3.12 构建、附件与发布验证见 releases/v3.3.12/RELEASE-MANIFEST.md。
