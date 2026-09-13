@@ -118,10 +118,8 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  const disabled=(await readdir(home)).filter(n=>n.startsWith('config.toml.disabled-'));assert.equal(disabled.length,1);assert.equal(await readFile(path.join(home,disabled[0]),'utf8'),configured);
  await writeFile(path.join(home,'config.toml'),'invalid=[TOML');
  const rejected=spawnSync(driver,['configure',home],{encoding:'utf8',windowsHide:true});assert.notEqual(rejected.status,0);assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),retainedAuth);
- const logDir=path.join(home,'yilai-switcher-logs');const logs=(await Promise.all((await readdir(logDir)).map(n=>readFile(path.join(logDir,n),'utf8')))).join('\n');
- for(const secret of [privateFragment,'sk-isolated-test-only','sk-fake-file-credential'])assert(!logs.includes(secret));
- assert(!logs.includes('sync_history')&&!logs.includes('recover_history')&&!logs.includes('undo_history'));
- facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy yilai rollout/index unified; official runtime reads it; API resumes it','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','logs contain no history operations or credentials'];
+  await assert.rejects(access(path.join(home,'yilai-switcher-logs')));
+  facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy yilai rollout/index unified; official runtime reads it; API resumes it','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','operations create no process logs'];
  facts.status='passed';await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}

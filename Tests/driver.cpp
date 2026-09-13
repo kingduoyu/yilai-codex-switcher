@@ -4,6 +4,15 @@
 #include "HistorySync.h"
 #include "ConfigRewrite.h"
 #include <windows.h>
+std::string utf8(const std::wstring &value) {
+  if (value.empty()) return {};
+  const auto size = WideCharToMultiByte(CP_UTF8, 0, value.data(), int(value.size()),
+                                        nullptr, 0, nullptr, nullptr);
+  std::string output(size, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value.data(), int(value.size()), output.data(),
+                      size, nullptr, nullptr);
+  return output;
+}
 int wmain(int argc, wchar_t **argv) {
   if (argc == 2 && std::wstring(argv[1]) == L"app-self-test") {
     std::wstring error;
@@ -23,8 +32,14 @@ int wmain(int argc, wchar_t **argv) {
     std::wstring name(argv[1]);
     if (name != L"configure" && name != L"cleanup" && name != L"official" && name != L"unify") return 2;
     auto action = name == L"configure" ? app::Action::Configure : name == L"official" ? app::Action::Official : name == L"unify" ? app::Action::UnifyHistory : app::Action::Cleanup;
-    app::run(action, std::filesystem::absolute(argv[2]),
-             L"sk-isolated-test-only", false, argc == 4 ? (std::wstring(argv[3]) == L"--auto-runtime" ? yilai_sources::locate_runtime() : std::filesystem::path(argv[3])) : std::filesystem::path{});
+    const auto result = app::run(action, std::filesystem::absolute(argv[2]),
+        L"sk-isolated-test-only", false,
+        argc == 4 ? (std::wstring(argv[3]) == L"--auto-runtime"
+                         ? yilai_sources::locate_runtime()
+                         : std::filesystem::path(argv[3]))
+                  : std::filesystem::path{});
+    std::cout << (result.warning ? "WARNING: " : "OK: ")
+              << utf8(result.message) << '\n';
     return 0;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

@@ -1,7 +1,6 @@
 """Exercise the real Windows failure transition in an isolated Codex home."""
 import ctypes as c
 import ctypes.wintypes as w
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -47,9 +46,9 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
             time.sleep(0.1)
         assert found, "Application window did not start"
         window = found[0]
-        logs = u.GetDlgItem(window, 1005)
         api = u.GetDlgItem(window, 1001)
-        assert logs and api, "Expected controls missing"
+        assert api, "Expected controls missing"
+        assert not u.GetDlgItem(window, 1005), "Process log button remains"
         assert u.GetDlgItem(window, 1002), "Official button missing"
         assert not u.GetDlgItem(window, 1006), "Standalone history button remains"
         u.FindWindowExW.argtypes = [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR]
@@ -61,17 +60,13 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
         for attempt in range(2):
             u.SendMessageW(window, 0x111, 1001, api)
             for _ in range(150):
-                if u.GetWindowLongW(logs, -16) & 0x10000000 and u.IsWindowEnabled(api):
+                if u.IsWindowEnabled(api):
                     break
                 time.sleep(0.1)
-            assert u.GetWindowLongW(logs, -16) & 0x10000000, "Failure did not reveal logs"
-            assert u.IsWindowEnabled(logs), "Visible log button is disabled after failure"
             assert u.IsWindowEnabled(api), "Switch button did not recover"
             assert (home / "config.toml").read_text(encoding="utf8") == original
-        entries = [json.loads(line) for log in (home / "yilai-switcher-logs").glob("*.log")
-                   for line in log.read_text(encoding="utf8").splitlines()]
-        assert sum(row.get("result") == "failure" for row in entries) == 2
-        print("PASS: two real GUI failures expose enabled logs, preserve config, and write failure records")
+        assert not (home / "yilai-switcher-logs").exists()
+        print("PASS: two real GUI failures recover controls, preserve config, and create no process logs")
     finally:
         if found:
             u.SendMessageW(found[0], 0x10, 0, 0)
