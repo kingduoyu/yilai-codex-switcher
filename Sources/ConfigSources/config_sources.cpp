@@ -413,8 +413,13 @@ extern "C" int yilai_sources_verify(YilaiConfigSources *c, const char *key, char
     const auto directoryIssue = ccsDirectoryIssue(c->home);
     if (!directoryIssue.empty())
       issues.push_back(directoryIssue);
-    for (auto &cwd : c->roots) {
-      auto loaded = probe(c->runtime, c->home, cwd);
+    const auto responses = yilai_sources::probe_configs(c->runtime, c->home, c->roots);
+    for (size_t i = 0; i < c->roots.size(); ++i) {
+      const auto &cwd = c->roots[i];
+      auto loaded = Json::parse(responses[i]);
+      require(loaded.contains("config") && loaded["config"].is_object() &&
+                  loaded.contains("layers") && loaded["layers"].is_array(),
+              "Codex 未提供可识别的配置来源，无法确认最终配置。");
       const auto &config = loaded.at("config");
       const auto prefix = c->roots.size() > 1 ? "项目 " + text(cwd) + "：" : "";
       const auto providerId = config.value("model_provider", "openai");
