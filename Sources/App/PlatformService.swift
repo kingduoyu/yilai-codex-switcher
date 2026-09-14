@@ -251,14 +251,7 @@ final class PlatformService {
             return ((report["skipped_files"] as? NSNumber)?.intValue ?? 0) == 0
         }
         func checkHistoryBestEffort() -> Bool { true }
-        if operation == .unifyHistory {
-            let complete = try unifyHistory()
-            return OperationOutcome(
-                message: complete
-                    ? "本地历史已统一为 custom。"
-                    : "旧易来对话已尽量同步，部分异常会话已跳过。",
-                warning: !complete)
-        }
+        if operation == .unifyHistory { return OperationOutcome(message: "此版本不处理历史对话归属。", warning: false) }
         if operation == .official {
             log.event("prepare_config", "Validating official configuration update")
             let beforeConfig = try snapshot(config)
@@ -284,12 +277,7 @@ final class PlatformService {
             }
             log.event("write_config", "Writing official configuration atomically")
             try write(after, config)
-            let historyComplete = checkHistoryBestEffort()
-            return OperationOutcome(
-                message: historyComplete
-                    ? "已切换到官方，旧对话检查完成。请重新打开 Codex。"
-                    : "已切换到官方。部分旧对话未能检查，连接配置不受影响。请重新打开 Codex。",
-                warning: !historyComplete)
+            return OperationOutcome(message: "已切换到官方。历史对话保持不变，请重新打开 Codex。", warning: false)
         }
         if operation == .cleanup {
             log.event("prepare_config", "Checking config before reset")
@@ -439,17 +427,13 @@ final class PlatformService {
             }
             if let sourceError { yilai_config_free(sourceError) }
         }
-        let historyComplete = checkHistoryBestEffort()
         if !effectiveIssue.isEmpty {
             var message = "API 已配置并保留，但功能探测未完全通过：\(log.sanitized(effectiveIssue))。不会回滚连接，请截图此提示。"
-            if !historyComplete { message += " 部分旧对话也未能检查。" }
             return OperationOutcome(message: message, warning: true)
         }
         return OperationOutcome(
-            message: historyComplete
-                ? "API 已配置，最终探测确认连接、模型和生图均已生效。请重新打开 Codex。"
-                : "API 已配置，最终探测已通过。部分旧对话未能检查，不影响当前连接。请重新打开 Codex。",
-            warning: !historyComplete)
+            message: "API 已配置，最终探测确认连接、模型和生图均已生效。历史对话保持不变，请重新打开 Codex。",
+            warning: false)
     }
 }
 
