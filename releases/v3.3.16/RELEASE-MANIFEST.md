@@ -1,6 +1,10 @@
 # v3.3.16 Release Manifest
 
-Status: verified candidate; publication pending.
+Status: published.
+
+Release: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.16
+Release ID: RE_kwDOT_oUCs4XKgFp. Published at 2026-09-14T18:42:25Z (2026-09-15 02:42:25 Asia/Shanghai). Tag v3.3.16 points to 1e61340; only release documentation differs from the verified source.
+Both existing releases/latest/download links returned HTTP 200; downloaded asset hashes match the values below. Local publish/win-x64 and publish/mac-universal copies updated from these verified downloads.
 
 Scope: remove historical ownership migration and all related checks from switching. Configuration and effective-config verification remain unchanged; history files are untouched.
 
