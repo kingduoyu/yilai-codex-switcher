@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.14
+# 易来 Codex 配置器 v3.3.15
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，切换时自动检查旧易来对话归属，无需额外按钮。
 
@@ -45,4 +45,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.14 构建、附件与发布验证见 releases/v3.3.14/RELEASE-MANIFEST.md。
+v3.3.15 构建、附件与发布验证见 releases/v3.3.15/RELEASE-MANIFEST.md。

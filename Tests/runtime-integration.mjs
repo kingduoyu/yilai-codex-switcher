@@ -90,7 +90,10 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  operation('official');
  server=await new Server().init();
  const official=(await server.request('config/read',{includeLayers:false})).config;
- assert.equal(official.model_provider,'custom');
+  assert.equal(official.model_provider,'custom');
+  assert(!official.model_catalog_json,'Official switch retained the managed catalog override');
+  assert.equal(await readFile(catalogPath,'utf8'),originalCatalog,'Official switch changed the external catalog');
+  await access(path.join(home,'yilai-model-catalog.json'));
  assert.equal(official.model_providers.custom.requires_openai_auth,true);
  assert(!official.model_providers.custom.base_url);
  assert(!official.model_providers.custom.experimental_bearer_token);

@@ -219,6 +219,28 @@ toml::table configure(const char *text, const char *key) {
   return root;
 }
 
+bool uses_yilai_catalog(const toml::table &scope) {
+  const auto path = scope["model_catalog_json"].value_or(std::string());
+  const auto separator = path.find_last_of("/\\");
+  return path.substr(separator == std::string::npos ? 0 : separator + 1) ==
+         "yilai-model-catalog.json";
+}
+void clear_yilai_catalog(toml::table &root) {
+  auto *profile = active_profile(root);
+  if (uses_yilai_catalog(root)) {
+    const auto path = root["model_catalog_json"].value_or(std::string());
+    // Preserve inactive profiles that currently inherit the managed catalog.
+    if (auto *profiles = root["profiles"].as_table())
+      for (auto &[name, node] : *profiles) {
+        auto *other = node.as_table();
+        if (other && other != profile && !other->contains("model_catalog_json"))
+          other->insert_or_assign("model_catalog_json", path);
+      }
+    root.erase("model_catalog_json");
+  }
+  if (profile && uses_yilai_catalog(*profile))
+    profile->erase("model_catalog_json");
+}
 toml::table configure_official(const char *text) {
   auto root = toml::parse(text);
   const toml::table provider{{"name", "OpenAI"},
@@ -250,6 +272,7 @@ toml::table configure_official(const char *text) {
   }
   providers.insert_or_assign("yilai", provider);
   clear_active_connection_constraints(root);
+  clear_yilai_catalog(root);
   return root;
 }
 
@@ -522,6 +545,30 @@ model='unchanged'
     check(official_unrelated[field] == before[field],
           "Official switching modified an unrelated setting.");
   const char *no_permissions = "model = 'gpt-6-astra'\n";
+  for (const auto *path : {"yilai-model-catalog.json",
+                           "/Users/test/.codex/yilai-model-catalog.json",
+                           "C:\\Users\\test\\.codex\\yilai-model-catalog.json",
+                           "\\\\server\\share\\yilai-model-catalog.json"}) {
+    auto input = configure("profile='work'\n[profiles.work]\n[profiles.other]\n", "sk-test");
+    input.insert_or_assign("model_catalog_json", path);
+    active_profile(input)->insert_or_assign("model_catalog_json", path);
+    auto switched = configure_official(format(input).c_str());
+    check(!switched.contains("model_catalog_json") &&
+              !active_profile(switched)->contains("model_catalog_json"),
+          "Official switching retained a managed catalog binding.");
+    check(switched["profiles"]["other"]["model_catalog_json"] == path,
+          "Official switching changed an inactive profile's inherited catalog.");
+    check(configure_official(format(switched).c_str()) == switched,
+          "Official catalog cleanup is not idempotent.");
+    input.erase("profile");
+    check(!configure_official(format(input).c_str()).contains("model_catalog_json"),
+          "Official root switching retained its managed catalog.");
+  }
+  auto custom_catalog = configure("profile='work'\nmodel_catalog_json='user.json'\n[profiles.work]\nmodel_catalog_json='personal.json'\n", "sk-test");
+  auto custom_official = configure_official(format(custom_catalog).c_str());
+  check(custom_official["model_catalog_json"] == "user.json" &&
+            custom_official["profiles"]["work"]["model_catalog_json"] == "personal.json",
+        "Official switching removed a user-owned catalog.");
   auto desktop_full_access =
       apply_desktop_mode(no_permissions, "full-access");
   check(desktop_full_access["approval_policy"] == "never" &&
