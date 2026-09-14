@@ -145,7 +145,7 @@ struct Child {
     auto command = quote(runtime.wstring()) + L" app-server";
     if (!CreateProcessW(runtime.c_str(), command.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-        environmentBlock.data(), nullptr, &startup.StartupInfo, &info)) fail("launch failed");
+        environmentBlock.data(), sqliteHome.c_str(), &startup.StartupInfo, &info)) fail("launch failed");
     process = info.hProcess;
     if (!AssignProcessToJobObject(job, process)) { CloseHandle(info.hThread); fail("process containment failed"); }
     auto resumed = ResumeThread(info.hThread);
@@ -191,6 +191,7 @@ struct Child {
     posix_spawn_file_actions_t actions;
     if(posix_spawn_file_actions_init(&actions))fail("process setup failed");
     struct Actions { posix_spawn_file_actions_t *value; ~Actions(){posix_spawn_file_actions_destroy(value);} } releaseActions{&actions};
+    if(posix_spawn_file_actions_addchdir_np(&actions,sqliteHome.c_str()))fail("probe working directory unavailable");
     for(auto mapping : {std::pair<int,int>{in[0],STDIN_FILENO},{out[1],STDOUT_FILENO},{err[1],STDERR_FILENO}})
       if(posix_spawn_file_actions_adddup2(&actions,mapping.first,mapping.second))fail("process setup failed");
     for(auto pair:{in,out,err})for(int i=0;i<2;++i)if(posix_spawn_file_actions_addclose(&actions,pair[i]))fail("process setup failed");
@@ -299,20 +300,29 @@ std::filesystem::path locate_runtime() {
   fail("installed runtime not found");
 }
 
-std::string probe_config(const std::filesystem::path &runtime,
+static std::vector<std::string> read_configs(const std::filesystem::path &runtime,
                          const std::filesystem::path &home,
-                         const std::filesystem::path &cwd) {
-  if(!runtime.is_absolute() || !home.is_absolute() || !cwd.is_absolute())fail("absolute paths required");
+                         const std::vector<std::filesystem::path> &contexts,
+                         const fs::path &sqliteHome, Clock::time_point deadline) {
+  if(contexts.empty())return {};
+  if(!runtime.is_absolute() || !home.is_absolute())fail("absolute paths required");
+  for(const auto &cwd:contexts)if(!cwd.is_absolute())fail("absolute paths required");
   if(!regular(runtime))fail("runtime unavailable");
-  const auto deadline=Clock::now()+std::chrono::seconds(20);
-  ProbeStorage storage;
-  Child child;child.launch(runtime,home,storage.path);
-  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.13"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
+  Child child;child.launch(runtime,home,sqliteHome);
+  child.send(Json({{"id",1},{"method","initialize"},{"params",{{"clientInfo",{{"name","yilai_switcher"},{"version","3.3.14"}}},{"capabilities",{{"experimentalApi",true}}}}}}).dump()+"\n");
   bool initialized=false;
+  size_t context=0;
+  std::vector<std::string> results;
   std::string pending;
   size_t received=0;
   for(;;) {
-    if(Clock::now()>=deadline)fail("timed out after 20 seconds");
+    const auto &cwd=contexts[context];
+    if(Clock::now()>=deadline) {
+      const auto stage=initialized ? "配置读取 config/read" : "运行时初始化 initialize";
+      throw std::runtime_error(std::string("最终核验未完成：")+stage+
+        " 超过 20 秒未响应；这不代表 API 或生图配置无效。运行时："+
+        utf8(runtime)+"；配置上下文："+utf8(cwd));
+    }
     char buffer[32768];
     auto count=child.read(child.output,buffer,sizeof(buffer));
     received+=count; if(received>outputLimit)fail("output limit exceeded");
@@ -346,7 +356,12 @@ std::string probe_config(const std::filesystem::path &runtime,
         throw std::runtime_error(reason+"（RPC "+code+"）。运行时："+utf8(runtime)+"；配置上下文："+utf8(cwd));
       }
       if(!message.contains("result") || !message["result"].is_object())fail("missing protocol result");
-      if(initialized)return message["result"].dump();
+      if(initialized) {
+        results.push_back(message["result"].dump());
+        if(++context==contexts.size())return results;
+        child.send(Json({{"id",2},{"method","config/read"},{"params",{{"includeLayers",true},{"cwd",utf8(contexts[context])}}}}).dump()+"\n");
+        continue;
+      }
       initialized=true;
       auto notification=Json({{"method","initialized"},{"params",Json::object()}}).dump();
       auto request=Json({{"id",2},{"method","config/read"},{"params",{{"includeLayers",true},{"cwd",utf8(cwd)}}}}).dump();
@@ -358,5 +373,23 @@ std::string probe_config(const std::filesystem::path &runtime,
     if(!count && !errors && child.exited(code))throw std::runtime_error("Codex config probe: process exited ("+std::to_string(code)+")");
     if(!count && !errors)child.idle();
   }
+}
+std::vector<std::string> probe_configs(const std::filesystem::path &runtime,
+                         const std::filesystem::path &home,
+                         const std::vector<std::filesystem::path> &contexts) {
+  if(contexts.empty())return {};
+  const auto deadline=Clock::now()+std::chrono::seconds(20);
+  ProbeStorage storage;
+  const auto bootstrap=storage.path/"bootstrap-home";
+  fs::create_directory(bootstrap);
+  // Let this runtime initialize its own disposable schema and complete backfill
+  // against an empty history before reading the real user's configuration.
+  (void)read_configs(runtime,bootstrap,{bootstrap},storage.path,deadline);
+  return read_configs(runtime,home,contexts,storage.path,deadline);
+}
+std::string probe_config(const std::filesystem::path &runtime,
+                         const std::filesystem::path &home,
+                         const std::filesystem::path &cwd) {
+  return probe_configs(runtime,home,{cwd}).front();
 }
 } // namespace yilai_sources
