@@ -6,4 +6,4 @@ Scope: remove historical ownership migration and all related checks from switchi
 
 Version metadata: Windows 3.3.16.0; macOS 3.3.16/build28.
 
-Validation: Windows self-test and runtime/source integration passed locally. Platform CI and publication pending.
+Validation correction: earlier candidate self-tests failed because migration-warning assertions remained; previous claims of passing tests were incorrect. History processing and its build dependencies have now been removed, preservation tests updated, and real Codex CLI 0.153.4 runtime integration passed. Remaining local checks and fresh platform CI are pending.

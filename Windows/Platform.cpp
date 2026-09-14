@@ -5,7 +5,6 @@
 #include "Diagnostics.h"
 #include "OperationGuard.h"
 #include "ConfigSources.h"
-#include "HistorySync.h"
 #include "../Sources/Shared/vendor/json.hpp"
 #include <chrono>
 #include <fstream>
@@ -213,27 +212,6 @@ static RunResult perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
-  /* History ownership migration was intentionally removed; leave old sessions untouched. */
-  auto unifyHistory = [&] {
-    log.step("unify_history", "检查旧易来对话归属");
-    char *error = nullptr;
-    Buffer result(yilai_sync_history(utf8(root.wstring()).c_str(), 0, &error), yilai_config_free);
-    Buffer detail(error, yilai_config_free);
-    ensure(result != nullptr, detail ? detail.get() : "历史统一失败");
-    yilai_diagnostic_event(log.context, "history_result", result.get());
-    const auto report = Json::parse(result.get());
-    return report.value("skipped_files", size_t(0)) == 0;
-  };
-  auto checkHistoryBestEffort = [&] { return true; };
-  if (action == Action::UnifyHistory) {
-    return {L"此版本不处理历史对话归属。", false};
-    /*
-    const bool complete = unifyHistory();
-    return {complete ? L"本地历史已统一为 custom。"
-                     : L"旧易来对话已尽量同步，部分异常会话已跳过。",
-            !complete};
-    */
-  }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
     regular(config);
@@ -252,11 +230,7 @@ static RunResult perform(Action action, const fs::path &root,
     ensure(fs::exists(config) == hadConfig && (hadConfig ? read(config) : "") == before,
            "配置已被其他程序改动，请关闭后重试。");
     atomic(config, after);
-    const bool historyComplete = checkHistoryBestEffort();
-    return {historyComplete
-                ? L"已切换到官方，旧对话检查完成。请重新打开 Codex。"
-                : L"已切换到官方。部分旧对话未能检查，连接配置不受影响。请重新打开 Codex。",
-            !historyComplete};
+    return {L"已切换到官方。请重新打开 Codex。", false};
   }
   if (action == Action::Cleanup) {
     log.step("rename_config", "停用旧配置");
@@ -400,26 +374,20 @@ static RunResult perform(Action action, const fs::path &root,
                                       : "无法确认最终生效配置";
     }
   }
-  const bool historyComplete = checkHistoryBestEffort();
   if (!effectiveIssue.empty()) {
     Buffer clean(yilai_diagnostic_sanitize(log.context, effectiveIssue.c_str()),
                  yilai_config_free);
     auto message = L"API 已配置并保留，但功能探测未完全通过：" +
                    wide(clean ? clean.get() : effectiveIssue) +
                    L"。不会回滚连接，请截图此提示。";
-    if (!historyComplete)
-      message += L" 部分旧对话也未能检查。";
     return {message, true};
   }
-  return {historyComplete
-              ? L"API 已配置，最终探测确认连接、模型和生图均已生效。请重新打开 Codex。"
-              : L"API 已配置，最终探测已通过。部分旧对话未能检查，不影响当前连接。请重新打开 Codex。",
-          !historyComplete};
+  return {L"API 已配置，最终探测确认连接、模型和生图均已生效。请重新打开 Codex。", false};
 }
 RunResult run(Action action, const fs::path &root, const std::wstring &input,
               bool closed, const fs::path &runtimeOverride,
               std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::UnifyHistory ? "unify_history" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);
@@ -549,57 +517,15 @@ bool selfTest(std::wstring &error) {
                read(root / L"auth.json") == auth,
            "Official switch did not reject NUL configuration without changes");
 
-    for (bool hadConfig : {true, false}) {
-      if (hadConfig) atomic(root / L"config.toml", config);
-      else fs::remove(root / L"config.toml");
-      bool injected = false, sawOfficial = false;
-      const auto result = run(
-          Action::Official, root, L"", false, {},
-          [&](const std::wstring &stage) {
-            if (stage == L"检查旧易来对话归属" && !injected) {
-              injected = true;
-              sawOfficial = mode(root) == L"OpenAI 官方";
-              throw std::runtime_error("Injected official history failure");
-            }
-          });
-      ensure(injected && sawOfficial && mode(root) == L"OpenAI 官方" &&
-                  result.message.find(L"部分旧对话未能检查") != std::wstring::npos &&
-                 fs::exists(root / L"config.toml") &&
-                 read(root / L"auth.json") == auth &&
-                 read(root / L"sessions/example.jsonl") == history,
-             "Official history warning rolled back a successful switch");
-    }
-    atomic(root / L"config.toml", config);
-    atomic(root / L"auth.json", auth);
-    atomic(root / L"yilai-model-catalog.json", "old-catalog-sentinel");
-    bool apiHistoryInjected = false;
-    const auto apiHistoryResult = run(
-        Action::Configure, root, L"sk-test", false, {},
-        [&](const std::wstring &stage) {
-          if (stage == L"检查旧易来对话归属" && !apiHistoryInjected) {
-            apiHistoryInjected = true;
-            throw std::runtime_error("Injected API history failure");
-          }
-        });
-    ensure(apiHistoryInjected && mode(root) == L"易来 API" &&
-                apiHistoryResult.message.find(L"部分旧对话未能检查") !=
-                   std::wstring::npos &&
-               !fs::exists(root / L"auth.json") &&
-               read(root / L"yilai-model-catalog.json") ==
-                   yilai_model_catalog(),
-           "API history warning rolled back the primary configuration");
     atomic(root / L"config.toml", config);
     atomic(root / L"auth.json", auth);
     atomic(root / L"sessions/broken.jsonl", "not-json\n");
-    const auto skippedHistoryResult =
-        run(Action::Configure, root, L"sk-test", false);
-    ensure(mode(root) == L"易来 API" &&
-                skippedHistoryResult.message.find(L"部分旧对话未能检查") !=
-                   std::wstring::npos &&
-               !fs::exists(root / L"auth.json") &&
-               read(root / L"sessions/broken.jsonl") == "not-json\n",
-           "Skipped malformed history blocked API configuration");
-    fs::remove(root / L"sessions/broken.jsonl");
+    for (auto action : {Action::Configure, Action::Official}) {
+      const auto result = run(action, root, L"sk-test", false);
+      ensure(!result.warning && read(root / L"sessions/broken.jsonl") == "not-json\n" &&
+                 read(root / L"sessions/example.jsonl") == history,
+             "Switch changed history or reported a history warning");
+    }
     const std::string broken = "invalid=[configuration";
     atomic(root / L"config.toml", broken);
     atomic(root / L"auth.json", auth);

@@ -1,6 +1,6 @@
 # 易来 Codex 配置器 v3.3.16
 
-Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，切换时自动检查旧易来对话归属，无需额外按钮。
+Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，不处理历史对话归属。
 
 稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg)。也可以打开 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载。
 
@@ -8,8 +8,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 1. 完全退出 Codex 和 CC-Switch，包括后台进程。
 2. 填写 API Key，点击 **配置易来 API · 启用生图**，完成后重新打开 Codex。
-3. 旧易来对话检查在连接配置成功后自动执行；只有 `yilai` 记录才修复，已是 `custom` 或其他来源的不改写。异常会话会跳过，不影响当前连接。
-4. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
+3. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
 
@@ -21,13 +20,11 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
 - 官方切换拒绝含 NUL 的异常配置；写入与回滚前检查文件状态，检测到外部修改时不覆盖。其他 profile 引用的原连接保留，当前 custom/yilai 官方别名不带第三方凭据。
 
-## 旧易来对话与错误提示
+## 错误提示
 
-API/官方切换时自动检查旧易来 yilai 对话：只将 JSONL 第一条 session_meta 和 SQLite 索引中的 yilai 改成 custom。openai、ccswitch、custom 等其他来源只读元数据前缀，不读取完整正文、不迁移；正文、标题、归档和父对话元数据不修改。不增加历史按钮。
+API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不读写用户历史 JSONL、SQLite 或已有迁移备份。最终配置核验使用隔离临时数据库，不重建用户历史索引。
 
-连接配置、模型目录和登录处理是主流程，完成后不因本地历史异常回滚。历史同步按文件尽量执行：重复 session ID 不再阻断；无法读取、JSONL 损坏、备份或写入失败的单个会话会记录告警并跳过，其余会话继续。成功迁移的内容备份到 yilai-history-backups，已是 custom 的不改写；待迁移文件仍做完整 JSONL 校验。重复检查走前缀和待迁移数据库行查询，不再反复读取大体积正文或完整数据库。API 核心写入完成后启动隔离运行时做只读最终探测；探测和历史告警均不回滚连接。官方当前路由与 API 均采用 custom，认证方式随当前选择变化；没有官方 auth.json 时需重新登录。
-
-配置失败或最终探测发现功能缺失时，界面直接显示脱敏后的具体原因和可识别的配置来源，供截图反馈；不再生成过程 JSON 日志或提供“查看日志”入口。只有连接、模型目录或登录文件在写入阶段形成半套配置时才回滚本轮核心写入；最终探测、功能冲突和历史异常只告警并保留可用连接。重置只改名 config.toml。未测试生产官方发送，不声明完整复制 CCS 账号管理和自动化功能。
+配置失败或最终探测发现功能缺失时，界面直接显示脱敏后的具体原因和可识别的配置来源，供截图反馈；不再生成过程 JSON 日志或提供“查看日志”入口。只有连接、模型目录或登录文件在写入阶段形成半套配置时才回滚本轮核心写入；最终探测和功能冲突只告警并保留可用连接。重置只改名 config.toml。未测试生产官方发送，不声明完整复制 CCS 账号管理和自动化功能。
 
 ## CCS 使用顺序
 

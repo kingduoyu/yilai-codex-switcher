@@ -18,7 +18,7 @@ final class Controller: ObservableObject {
         busy = true
         failed = false
         warning = false
-        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : operation == .unifyHistory ? "正在统一本地历史，首次需扫描…" : "正在配置易来 API 并启用生图，请稍候…"
+        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<OperationOutcome, Error> = Result { try service.run(operation, key: token) }

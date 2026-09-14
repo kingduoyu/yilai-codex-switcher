@@ -87,7 +87,9 @@ p=pathlib.Path(db.execute('select rollout_path from threads where id=?',(tid,)).
 b=p.read_bytes();head,tail=b.split(b'\\n',1);m=json.loads(head);m['payload']['model_provider']='yilai';p.write_bytes(json.dumps(m).encode()+b'\\n'+tail)
 db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.commit();db.close()`,home,id],{encoding:'utf8',windowsHide:true});
  assert.equal(alter.status,0,alter.stderr);
+ const legacyBefore=await snapshots();
  operation('official');
+ assert.deepEqual(await snapshots(),legacyBefore,'Official switch changed legacy history');
  server=await new Server().init();
  const official=(await server.request('config/read',{includeLayers:false})).config;
   assert.equal(official.model_provider,'custom');
@@ -98,13 +100,13 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  assert(!official.model_providers.custom.base_url);
  assert(!official.model_providers.custom.experimental_bearer_token);
  const officialThread=await server.request('thread/read',{threadId:id,includeTurns:true});
- assert.equal(officialThread.thread.modelProvider,'custom');
+ assert.equal(officialThread.thread.modelProvider,'yilai');
  await server.close();server=null;
  operation('configure');
  await writeFile(path.join(home,'config.toml'),configured.replaceAll('https://api.yilai-ai.com','http://127.0.0.1:'+port+'/v1'));
  server=await new Server().init();
  await server.request('thread/resume',{threadId:id,cwd:home,model:'gpt-6-astra',modelProvider:'custom',approvalPolicy:'never',sandbox:'read-only'});
- await server.turn(id,'Resume migrated legacy conversation');
+ await server.turn(id,'Resume synthetic conversation');
  await server.close();server=null;
  await mkdir(path.join(home,'yilai-history-backups'),{recursive:true});
  const privateFragment='PRIVATE-HISTORY-MUST-NOT-APPEAR';
@@ -122,7 +124,7 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  await writeFile(path.join(home,'config.toml'),'invalid=[TOML');
  const rejected=spawnSync(driver,['configure',home],{encoding:'utf8',windowsHide:true});assert.notEqual(rejected.status,0);assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),retainedAuth);
   await assert.rejects(access(path.join(home,'yilai-switcher-logs')));
-  facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy yilai rollout/index unified; official runtime reads it; API resumes it','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','operations create no process logs'];
+  facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy history preserved during official switching','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','operations create no process logs'];
  facts.status='passed';await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}
