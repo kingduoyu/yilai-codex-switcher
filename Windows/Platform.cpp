@@ -213,6 +213,7 @@ static RunResult perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  /* History ownership migration was intentionally removed; leave old sessions untouched. */
   auto unifyHistory = [&] {
     log.step("unify_history", "检查旧易来对话归属");
     char *error = nullptr;
@@ -223,26 +224,15 @@ static RunResult perform(Action action, const fs::path &root,
     const auto report = Json::parse(result.get());
     return report.value("skipped_files", size_t(0)) == 0;
   };
-  auto checkHistoryBestEffort = [&] {
-    try {
-      const bool complete = unifyHistory();
-      if (!complete)
-        yilai_diagnostic_event(log.context, "history_warning",
-                               "Some invalid sessions were skipped");
-      return complete;
-    } catch (const std::exception &e) {
-      yilai_diagnostic_event(log.context, "history_warning", e.what());
-    } catch (...) {
-      yilai_diagnostic_event(log.context, "history_warning",
-                             "Unknown history check error");
-    }
-    return false;
-  };
+  auto checkHistoryBestEffort = [&] { return true; };
   if (action == Action::UnifyHistory) {
+    return {L"此版本不处理历史对话归属。", false};
+    /*
     const bool complete = unifyHistory();
     return {complete ? L"本地历史已统一为 custom。"
                      : L"旧易来对话已尽量同步，部分异常会话已跳过。",
             !complete};
+    */
   }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");

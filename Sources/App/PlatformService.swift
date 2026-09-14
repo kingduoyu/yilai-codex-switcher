@@ -250,18 +250,7 @@ final class PlatformService {
             }
             return ((report["skipped_files"] as? NSNumber)?.intValue ?? 0) == 0
         }
-        func checkHistoryBestEffort() -> Bool {
-            do {
-                let complete = try unifyHistory()
-                if !complete {
-                    log.event("history_warning", "Some invalid sessions were skipped")
-                }
-                return complete
-            } catch {
-                log.event("history_warning", operationErrorDescription(error))
-                return false
-            }
-        }
+        func checkHistoryBestEffort() -> Bool { true }
         if operation == .unifyHistory {
             let complete = try unifyHistory()
             return OperationOutcome(
