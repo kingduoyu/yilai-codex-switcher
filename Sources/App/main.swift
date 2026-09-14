@@ -18,7 +18,7 @@ final class Controller: ObservableObject {
         busy = true
         failed = false
         warning = false
-        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : operation == .unifyHistory ? "正在统一本地历史，首次需扫描…" : "正在配置易来 API 并启用生图，请稍候…"
+        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<OperationOutcome, Error> = Result { try service.run(operation, key: token) }
@@ -167,7 +167,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.15"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "易来 Codex 配置器 v3.3.16"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in

@@ -3,7 +3,7 @@
 #include <string>
 #include <functional>
 namespace app {
-enum class Action { Configure, Official, UnifyHistory, Cleanup };
+enum class Action { Configure, Official, Cleanup };
 struct RunResult {
   std::wstring message;
   bool warning = false;
