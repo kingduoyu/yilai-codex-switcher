@@ -1,6 +1,6 @@
 # v3.3.14 Release Manifest
 
-Status: platform-verified candidate; publication pending.
+Status: published as the latest release; platform verification and public download checks completed.
 
 Scope: initialize disposable probe databases against an empty history before reading real configuration. Reuse one runtime session for all configuration contexts and share the existing 20-second deadline across bootstrap and verification. Isolate the startup working directory and identify the timeout phase. API rollback semantics are unchanged.
 
@@ -18,3 +18,5 @@ Windows: GitHub Actions run 34853808194 passed native build, executable self-tes
 Local validation before version update: Windows build, real Codex CLI 0.153.4 runtime integration, source-layer integration and GUI regression passed. On the same local configuration, one measured probe took 17.32 seconds before the bootstrap change and 0.47 seconds after it. These measurements are not a customer-wide performance guarantee.
 
 Limits: no paid image generation, production official OAuth send or physical Intel execution was tested. Temporary bootstrap storage is discarded; user history databases are not used for probing. macOS is ad-hoc signed and not notarized.
+
+Publication: GitHub release database ID 388454610 was published at 2026-09-14T14:16:18Z as v3.3.14. The tutorial's existing releases/latest/download URLs returned HTTP 200 for both platforms. Downloaded files matched the sizes and SHA-256 values above. Stable and versioned local program copies were updated in the parent publish/win-x64 and publish/mac-universal directories. The tag points to candidate-record commit 93c0710; application sources match the verified CI commit.
