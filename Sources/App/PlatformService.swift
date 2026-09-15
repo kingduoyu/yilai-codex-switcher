@@ -1,11 +1,12 @@
 import Foundation
 import Darwin
 import ConfigRewrite
+import HistoryRepair
 import Diagnostics
 import OperationGuard
 import ConfigSources
 
-enum Operation: String, CaseIterable { case configure, official, cleanup }
+enum Operation: String, CaseIterable { case configure, official, cleanup, repairHistory }
 struct AppError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -48,8 +49,9 @@ private final class DiagnosticLog {
         case "verify_sources": lastMainStage = "核验实际生效连接"
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
-        case "delete_auth": lastMainStage = "删除旧登录文件"
+        case "delete_auth": lastMainStage = "将旧登录文件移入废纸篓"
         case "rename_config": lastMainStage = "停用旧配置"
+        case "repair_history": lastMainStage = "修复旧易来对话"
         default: break
         }
         stage.withCString { name in
@@ -231,6 +233,22 @@ final class PlatformService {
     private func runOperation(_ operation: Operation, key: String, requireClosed: Bool, runtimeOverride: String, log: DiagnosticLog) throws -> OperationOutcome {
         log.event("checking_apps", requireClosed ? "Checking Codex and CC-Switch processes" : "Synthetic-home test: process check skipped")
         if requireClosed { try closed() }
+        if operation == .repairHistory {
+            log.event("repair_history", "Repairing legacy provider metadata")
+            var failure: UnsafeMutablePointer<CChar>?
+            let output = root.path.withCString { yilai_repair_history($0, &failure) }
+            defer {
+                if let output { yilai_config_free(output) }
+                if let failure { yilai_config_free(failure) }
+            }
+            guard let output else { throw AppError(message: failure.map { String(cString: $0) } ?? "旧对话修复失败") }
+            let data = Data(String(cString: output).utf8)
+            guard let report = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let message = report["message"] as? String, let warning = report["warning"] as? Bool else {
+                throw AppError(message: "无法读取修复结果")
+            }
+            return OperationOutcome(message: message, warning: warning)
+        }
         if operation == .official {
             log.event("prepare_config", "Validating official configuration update")
             let beforeConfig = try snapshot(config)
@@ -327,12 +345,12 @@ final class PlatformService {
             log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
-            log.event("delete_auth", "Removing only auth.json when present")
+            log.event("delete_auth", "Moving auth.json to Trash when present")
             guard try snapshot(auth) == beforeAuth else {
                 throw AppError(message: "登录文件已被其他程序改动，请关闭后重试。")
             }
             if beforeAuth != nil {
-                try files.removeItem(at: auth)
+                try files.trashItem(at: auth, resultingItemURL: nil)
                 authRemoved = true
             }
         } catch {
@@ -417,7 +435,7 @@ final class PlatformService {
 }
 
 func selfTest() throws {
-    for test in [yilai_config_self_test, yilai_diagnostic_self_test] {
+    for test in [yilai_config_self_test, yilai_diagnostic_self_test, yilai_history_repair_self_test] {
         var error: UnsafeMutablePointer<CChar>?
         let ok = test(&error)
         let detail = error.map { String(cString: $0) } ?? "Core test failed"

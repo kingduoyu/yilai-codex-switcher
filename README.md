@@ -1,6 +1,6 @@
-# 易来 Codex 配置器 v3.3.16
+# 易来 Codex 配置器 v3.3.17
 
-Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，不处理历史对话归属。
+Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换；常规切换不处理历史对话归属。
 
 稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg)。也可以打开 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载。
 
@@ -12,9 +12,11 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
 
+“修复旧易来对话”是独立手动按钮，无需重新填写 Key。先完成易来 API 配置、退出 Codex 和 CC-Switch，再按需点击；仅将旧 yilai 归属改为 custom，并同步对应 state_5.sqlite 索引。重复 ID、损坏文件、路径冲突或索引失败逐项跳过并汇总提示，已成功项保留，再次点击可补齐未完成索引。不会修改连接、登录、对话正文或已有备份，也不会生成固定名称备份。此按钮不诊断或修复所有网络重连问题。
+
 ## 配置与兼容
 
-- 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并删除当前 CODEX_HOME/auth.json。
+- 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并将当前 CODEX_HOME/auth.json 移入系统回收站或废纸篓。不生成固定名称的登录备份，已有 auth.json.yilai-disabled 不参与切换，也不阻止配置。
 - 写入内置的 sol、terra、astra 三个模型和模型目录指向；保留已有合法模型选择，否则默认 sol。保留推理档位、MCP、权限等无关配置。配置未显式写权限时，沿用 Codex 桌面端已保存的完全访问模式，不降级为审批模式。
 - 主按钮先完成本地连接、模型目录和登录文件处理，再启动隔离的 Codex app-server 做只读最终探测。探测核对实际 provider、地址、认证、模型目录、生图开关和生图授权，并指出覆盖来源；探测或功能冲突不回滚已完成的 API 配置，也不自动修改项目/profile/启动参数。
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
@@ -34,7 +36,7 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 ## 开发与验证
 
-共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
+共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；手动历史修复：Sources/HistoryRepair；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 
@@ -42,4 +44,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.16 构建、附件与发布验证见 releases/v3.3.16/RELEASE-MANIFEST.md。
+v3.3.17 构建、附件与发布验证见 releases/v3.3.17/RELEASE-MANIFEST.md。

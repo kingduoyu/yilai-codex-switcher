@@ -2,6 +2,7 @@
 
 #include "Platform.h"
 #include "ConfigRewrite.h"
+#include "HistoryRepair.h"
 #include "Diagnostics.h"
 #include "OperationGuard.h"
 #include "ConfigSources.h"
@@ -19,6 +20,26 @@ namespace app {
 namespace fs = std::filesystem;
 namespace {
 using Json = nlohmann::json;
+void recycleFile(const fs::path &path) {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
+    throw std::runtime_error("Cannot initialize Recycle Bin operation");
+  struct Apartment {
+    bool owned;
+    ~Apartment() { if (owned) CoUninitialize(); }
+  } apartment{SUCCEEDED(initialized)};
+  Microsoft::WRL::ComPtr<IFileOperation> operation;
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  HRESULT result = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
+  if (SUCCEEDED(result)) result = operation->SetOperationFlags(FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE);
+  if (SUCCEEDED(result)) result = SHCreateItemFromParsingName(fs::absolute(path).c_str(), nullptr, IID_PPV_ARGS(&item));
+  if (SUCCEEDED(result)) result = operation->DeleteItem(item.Get(), nullptr);
+  if (SUCCEEDED(result)) result = operation->PerformOperations();
+  BOOL aborted = FALSE;
+  if (SUCCEEDED(result)) result = operation->GetAnyOperationsAborted(&aborted);
+  if (FAILED(result) || aborted || fs::exists(path))
+    throw std::runtime_error("Cannot move login file to Recycle Bin (HRESULT " + std::to_string(static_cast<unsigned long>(result)) + ")");
+}
 std::string utf8(const std::wstring &s) {
   if (s.empty())
     return {};
@@ -212,6 +233,15 @@ static RunResult perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  if (action == Action::RepairHistory) {
+    log.step("repair_history", "修复旧易来对话");
+    char *error = nullptr;
+    Buffer result(yilai_repair_history(utf8(root.wstring()).c_str(), &error), yilai_config_free);
+    Buffer detail(error, yilai_config_free);
+    ensure(result != nullptr, detail ? detail.get() : "旧对话修复失败");
+    auto report = Json::parse(result.get());
+    return {wide(report.at("message").get<std::string>()), report.at("warning").get<bool>()};
+  }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
     regular(config);
@@ -293,12 +323,11 @@ static RunResult perform(Action action, const fs::path &root,
            "配置已被其他程序改动，请关闭后重试。");
     atomic(config, after);
     wroteConfig = true;
-    log.step("delete_auth", "删除旧登录文件");
+    log.step("delete_auth", "将旧登录文件移入回收站");
     ensure(fs::exists(authPath) == hadAuth && (hadAuth ? read(authPath) : "") == authBefore,
            "登录文件已被其他程序改动，请关闭后重试。");
     if (hadAuth) {
-      if (!DeleteFileW(authPath.c_str()))
-        throw std::runtime_error(windowsFailure("无法删除登录文件", GetLastError()));
+      recycleFile(authPath);
       removedAuth = true;
     }
     ensure(!fs::exists(authPath),
@@ -387,7 +416,7 @@ static RunResult perform(Action action, const fs::path &root,
 RunResult run(Action action, const fs::path &root, const std::wstring &input,
               bool closed, const fs::path &runtimeOverride,
               std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::RepairHistory ? "repair_history" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);
@@ -410,7 +439,7 @@ RunResult run(Action action, const fs::path &root, const std::wstring &input,
 }
 bool selfTest(std::wstring &error) {
   try {
-    for (auto test : {yilai_config_self_test,
+    for (auto test : {yilai_config_self_test, yilai_history_repair_self_test,
                       yilai_diagnostic_self_test}) {
       char *detail = nullptr;
       int ok = test(&detail);
