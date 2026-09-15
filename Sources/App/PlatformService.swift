@@ -48,7 +48,7 @@ private final class DiagnosticLog {
         case "verify_sources": lastMainStage = "核验实际生效连接"
         case "prepare_config": lastMainStage = "准备连接配置"
         case "write_config": lastMainStage = "写入配置"
-        case "delete_auth": lastMainStage = "删除旧登录文件"
+        case "delete_auth": lastMainStage = "将旧登录文件移入废纸篓"
         case "rename_config": lastMainStage = "停用旧配置"
         default: break
         }
@@ -327,12 +327,12 @@ final class PlatformService {
             log.event("write_config", "Writing configuration atomically")
             try write(after, config)
             configChanged = true
-            log.event("delete_auth", "Removing only auth.json when present")
+            log.event("delete_auth", "Moving auth.json to Trash when present")
             guard try snapshot(auth) == beforeAuth else {
                 throw AppError(message: "登录文件已被其他程序改动，请关闭后重试。")
             }
             if beforeAuth != nil {
-                try files.removeItem(at: auth)
+                try files.trashItem(at: auth, resultingItemURL: nil)
                 authRemoved = true
             }
         } catch {

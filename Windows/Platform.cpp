@@ -19,6 +19,26 @@ namespace app {
 namespace fs = std::filesystem;
 namespace {
 using Json = nlohmann::json;
+void recycleFile(const fs::path &path) {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
+    throw std::runtime_error("Cannot initialize Recycle Bin operation");
+  struct Apartment {
+    bool owned;
+    ~Apartment() { if (owned) CoUninitialize(); }
+  } apartment{SUCCEEDED(initialized)};
+  Microsoft::WRL::ComPtr<IFileOperation> operation;
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  HRESULT result = CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
+  if (SUCCEEDED(result)) result = operation->SetOperationFlags(FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE);
+  if (SUCCEEDED(result)) result = SHCreateItemFromParsingName(fs::absolute(path).c_str(), nullptr, IID_PPV_ARGS(&item));
+  if (SUCCEEDED(result)) result = operation->DeleteItem(item.Get(), nullptr);
+  if (SUCCEEDED(result)) result = operation->PerformOperations();
+  BOOL aborted = FALSE;
+  if (SUCCEEDED(result)) result = operation->GetAnyOperationsAborted(&aborted);
+  if (FAILED(result) || aborted || fs::exists(path))
+    throw std::runtime_error("Cannot move login file to Recycle Bin (HRESULT " + std::to_string(static_cast<unsigned long>(result)) + ")");
+}
 std::string utf8(const std::wstring &s) {
   if (s.empty())
     return {};
@@ -293,12 +313,11 @@ static RunResult perform(Action action, const fs::path &root,
            "配置已被其他程序改动，请关闭后重试。");
     atomic(config, after);
     wroteConfig = true;
-    log.step("delete_auth", "删除旧登录文件");
+    log.step("delete_auth", "将旧登录文件移入回收站");
     ensure(fs::exists(authPath) == hadAuth && (hadAuth ? read(authPath) : "") == authBefore,
            "登录文件已被其他程序改动，请关闭后重试。");
     if (hadAuth) {
-      if (!DeleteFileW(authPath.c_str()))
-        throw std::runtime_error(windowsFailure("无法删除登录文件", GetLastError()));
+      recycleFile(authPath);
       removedAuth = true;
     }
     ensure(!fs::exists(authPath),

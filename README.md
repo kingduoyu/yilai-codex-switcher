@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.16
+# 易来 Codex 配置器 v3.3.17
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，不处理历史对话归属。
 
@@ -14,7 +14,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 ## 配置与兼容
 
-- 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并删除当前 CODEX_HOME/auth.json。
+- 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并将当前 CODEX_HOME/auth.json 移入系统回收站或废纸篓。不生成固定名称的登录备份，已有 auth.json.yilai-disabled 不参与切换，也不阻止配置。
 - 写入内置的 sol、terra、astra 三个模型和模型目录指向；保留已有合法模型选择，否则默认 sol。保留推理档位、MCP、权限等无关配置。配置未显式写权限时，沿用 Codex 桌面端已保存的完全访问模式，不降级为审批模式。
 - 主按钮先完成本地连接、模型目录和登录文件处理，再启动隔离的 Codex app-server 做只读最终探测。探测核对实际 provider、地址、认证、模型目录、生图开关和生图授权，并指出覆盖来源；探测或功能冲突不回滚已完成的 API 配置，也不自动修改项目/profile/启动参数。
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
@@ -42,4 +42,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.16 构建、附件与发布验证见 releases/v3.3.16/RELEASE-MANIFEST.md。
+v3.3.17 构建、附件与发布验证见 releases/v3.3.17/RELEASE-MANIFEST.md。
