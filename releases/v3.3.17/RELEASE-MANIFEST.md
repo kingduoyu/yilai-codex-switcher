@@ -1,6 +1,9 @@
 # v3.3.17 Release Manifest
 
-Status: verified candidate; publication pending.
+Status: published.
+Release: https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.17
+Release ID: RE_kwDOT_oUCs4XLWif. Published at 2026-09-15T03:39:09Z (2026-09-15 11:39:09 Asia/Shanghai). Tag points to 61a473d; only release documentation differs from tested source.
+Published state checked via GitHub metadata. Fixed public asset names retained. Local publish copies updated directly from CI artifacts, without release downloads.
 
 Scope: move auth.json to the system Recycle Bin / Trash during API configuration instead of permanently deleting it. Existing disabled login backups are not consulted or overwritten. Add an explicit-only legacy yilai-to-custom history repair button. Repair skips duplicate IDs, malformed files and conflicting paths; per-row index failures do not revert other completed work. Configuration, authentication and existing backups remain untouched by repair.
 Version metadata: Windows 3.3.17.0; macOS 3.3.17/build29.
