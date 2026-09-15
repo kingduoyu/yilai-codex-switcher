@@ -1,6 +1,6 @@
 # 易来 Codex 配置器 v3.3.17
 
-Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换，不处理历史对话归属。
+Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换；常规切换不处理历史对话归属。
 
 稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg)。也可以打开 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载。
 
@@ -11,6 +11,8 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 3. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
+
+“修复旧易来对话”是独立手动按钮，无需重新填写 Key。先完成易来 API 配置、退出 Codex 和 CC-Switch，再按需点击；仅将旧 yilai 归属改为 custom，并同步对应 state_5.sqlite 索引。重复 ID、损坏文件、路径冲突或索引失败逐项跳过并汇总提示，已成功项保留，再次点击可补齐未完成索引。不会修改连接、登录、对话正文或已有备份，也不会生成固定名称备份。此按钮不诊断或修复所有网络重连问题。
 
 ## 配置与兼容
 
@@ -34,7 +36,7 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 ## 开发与验证
 
-共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
+共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；手动历史修复：Sources/HistoryRepair；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 

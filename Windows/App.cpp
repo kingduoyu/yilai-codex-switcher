@@ -14,7 +14,8 @@ constexpr UINT Done = WM_APP + 1;
 constexpr UINT Progress = WM_APP + 2;
 ULONGLONG operationStarted = 0;
 std::wstring progressStage;
-constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004;
+constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004, RepairHistory = 1006;
+int currentOperation = 0;
 constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
                    Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
                    Border = RGB(225, 231, 240);
@@ -96,9 +97,9 @@ void paint(HWND window, HDC dc) {
   const auto statusColor = failed ? RGB(157, 55, 46)
                            : warning ? RGB(161, 98, 7)
                                      : Ink;
-  text(dc, failed ? L"配置失败"
-                  : warning ? L"配置已保留，需要处理"
-                  : busy    ? L"正在切换"
+  text(dc, failed ? (currentOperation == RepairHistory ? L"历史修复失败" : L"配置失败")
+                  : warning ? (currentOperation == RepairHistory ? L"历史修复需要处理" : L"配置已保留，需要处理")
+                  : busy    ? (currentOperation == RepairHistory ? L"正在修复历史" : L"正在切换")
                             : L"连接状态",
        {32, 385, 260, 410}, smallFont,
        failed ? RGB(177, 67, 56) : warning ? RGB(161, 98, 7) : Muted);
@@ -111,9 +112,9 @@ void drawButton(const DRAWITEMSTRUCT &item) {
   bool enabled = !(item.itemState & ODS_DISABLED);
   bool down = item.itemState & ODS_SELECTED;
   const bool primary = item.CtlID == Api,
-             quiet = item.CtlID == Reset || item.CtlID == Eye;
+             quiet = item.CtlID == Reset || item.CtlID == RepairHistory || item.CtlID == Eye;
   COLORREF fill =
-      quiet ? (item.CtlID == Reset ? Canvas : RGB(255, 255, 255))
+      quiet ? (item.CtlID == Eye ? RGB(255, 255, 255) : Canvas)
       : primary
           ? (enabled ? down ? RGB(29, 78, 216) : Blue : RGB(161, 184, 234))
       : down ? RGB(239, 243, 249)
@@ -140,6 +141,7 @@ void drawButton(const DRAWITEMSTRUCT &item) {
 void begin(HWND window, int id) {
   if (busy)
     return;
+  currentOperation = id;
   const int length = GetWindowTextLengthW(keyBox);
   std::wstring key(size_t(length) + 1, L'\0');
   GetWindowTextW(keyBox, key.data(), length + 1);
@@ -151,16 +153,16 @@ void begin(HWND window, int id) {
     InvalidateRect(window, nullptr, FALSE);
     return;
   }
-  auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : app::Action::Cleanup;
+  auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : id == RepairHistory ? app::Action::RepairHistory : app::Action::Cleanup;
   busy = true;
   operationStarted = GetTickCount64();
-  progressStage = L"准备操作";
+  progressStage = id == RepairHistory ? L"正在修复旧易来对话" : L"准备操作";
   SetTimer(window, 1, 1000, nullptr);
   failed = false;
   warning = false;
   statusText =
-      id == Reset ? L"正在停用旧配置…" : id == Official ? L"正在切换官方…" : L"正在配置 API 和生图，请稍候…";
-  for (int child : {Api, Official, Reset, Eye})
+      id == RepairHistory ? L"正在修复旧易来对话，请稍候…" : id == Reset ? L"正在停用旧配置…" : id == Official ? L"正在切换官方…" : L"正在配置 API 和生图，请稍候…";
+  for (int child : {Api, Official, Reset, Eye, RepairHistory})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
   InvalidateRect(window, nullptr, FALSE);
@@ -201,6 +203,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     button(window, Api, L"配置易来 API · 启用生图", 52, 248, 310, 50);
     button(window, Official, L"切换到官方", 378, 248, 310, 50);
     button(window, Reset, L"重置配置", 624, 516, 88, 26);
+    button(window, RepairHistory, L"修复旧易来对话", 464, 516, 148, 26);
     refresh();
     return 0;
   }
@@ -231,7 +234,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
         SendMessageW(keyBox, EM_SETPASSWORDCHAR, showKey ? 0 : L'●', 0);
         SetWindowTextW(GetDlgItem(window, Eye), showKey ? L"隐藏" : L"显示");
         InvalidateRect(keyBox, nullptr, TRUE);
-      } else if (id == Api || id == Official || id == Reset)
+      } else if (id == Api || id == Official || id == Reset || id == RepairHistory)
         begin(window, id);
     }
     return 0;
@@ -254,7 +257,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     failed = !result->ok;
     warning = result->ok && result->warning;
     statusText = result->message;
-    for (int id : {Api, Official, Reset, Eye})
+    for (int id : {Api, Official, Reset, Eye, RepairHistory})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(keyBox, TRUE);
     if (result->ok && result->operation == Api)

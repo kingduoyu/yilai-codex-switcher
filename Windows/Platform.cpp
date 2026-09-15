@@ -2,6 +2,7 @@
 
 #include "Platform.h"
 #include "ConfigRewrite.h"
+#include "HistoryRepair.h"
 #include "Diagnostics.h"
 #include "OperationGuard.h"
 #include "ConfigSources.h"
@@ -232,6 +233,15 @@ static RunResult perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  if (action == Action::RepairHistory) {
+    log.step("repair_history", "修复旧易来对话");
+    char *error = nullptr;
+    Buffer result(yilai_repair_history(utf8(root.wstring()).c_str(), &error), yilai_config_free);
+    Buffer detail(error, yilai_config_free);
+    ensure(result != nullptr, detail ? detail.get() : "旧对话修复失败");
+    auto report = Json::parse(result.get());
+    return {wide(report.at("message").get<std::string>()), report.at("warning").get<bool>()};
+  }
   if (action == Action::Official) {
     log.step("official_config", "切换官方连接");
     regular(config);
@@ -406,7 +416,7 @@ static RunResult perform(Action action, const fs::path &root,
 RunResult run(Action action, const fs::path &root, const std::wstring &input,
               bool closed, const fs::path &runtimeOverride,
               std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::RepairHistory ? "repair_history" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);
@@ -429,7 +439,7 @@ RunResult run(Action action, const fs::path &root, const std::wstring &input,
 }
 bool selfTest(std::wstring &error) {
   try {
-    for (auto test : {yilai_config_self_test,
+    for (auto test : {yilai_config_self_test, yilai_history_repair_self_test,
                       yilai_diagnostic_self_test}) {
       char *detail = nullptr;
       int ok = test(&detail);

@@ -18,7 +18,7 @@ final class Controller: ObservableObject {
         busy = true
         failed = false
         warning = false
-        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
+        message = operation == .repairHistory ? "正在修复旧易来对话，请稍候…" : operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<OperationOutcome, Error> = Result { try service.run(operation, key: token) }
@@ -148,6 +148,14 @@ struct Content: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button { model.execute(.repairHistory) } label: {
+                    Label("修复旧易来对话", systemImage: "clock.arrow.circlepath")
+                        .frame(width: 148, height: 26)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .help("手动将旧易来对话的供应商归属从 yilai 修复为 custom，无需 API Key；不修复网络连接。")
                 Button("重置配置") { model.execute(.cleanup) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
