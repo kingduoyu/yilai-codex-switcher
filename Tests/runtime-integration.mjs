@@ -32,7 +32,7 @@ const mock = http.createServer(async (req,res) => {
 await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));
 const port=mock.address().port;
 const templateText=await readFile(templatePath,'utf8');
-const catalog={models:['gpt-5.6-sol','gpt-5.6-terra','gpt-6-astra'].map(slug=>({...JSON.parse(templateText),slug,display_name:slug}))};
+const catalog={models:['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'].map(slug=>({...JSON.parse(templateText),slug,display_name:slug}))};
 const catalogPath=path.join(home,'cc-switch-model-catalog.json');
 await writeFile(catalogPath,JSON.stringify(catalog,null,2));
 const config="model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json="+JSON.stringify(catalogPath.replaceAll('\\','/'))+"\ncli_auth_credentials_store='file'\napproval_policy='never'\nsandbox_mode='read-only'\n[analytics]\nenabled=false\n[model_providers.custom]\nname='CCS synthetic'\nbase_url='http://127.0.0.1:"+port+"/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='sk-synthetic-local-only'\n[model_providers.custom.http_headers]\nX-Keep='unchanged'\n";
@@ -68,8 +68,8 @@ try{
  server=await new Server().init();
  const models=await server.request('model/list',{includeHidden:false,limit:100});
  facts.models=models.data.map(m=>m.model??m.id);
- assert.deepEqual([...facts.models].sort(),['gpt-5.6-sol','gpt-5.6-terra','gpt-6-astra'].sort());
- for(const id of ['gpt-5.6-sol','gpt-5.6-terra','gpt-6-astra'])assert(facts.models.includes(id));
+ assert.deepEqual([...facts.models].sort(),['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'].sort());
+ for(const id of ['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'])assert(facts.models.includes(id));
  const effective=(await server.request('config/read',{includeLayers:false})).config;
  assert.equal(effective.model,'gpt-6-astra');assert.equal(effective.features.image_generation,true);
  assert.equal(effective.model_catalog_json.replaceAll('\\','/'),path.join(home,'yilai-model-catalog.json').replaceAll('\\','/'));

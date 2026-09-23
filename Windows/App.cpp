@@ -8,6 +8,7 @@
 #include <fstream>
 #include <memory>
 #include <thread>
+#include <shlobj.h>
 
 namespace {
 constexpr UINT Done = WM_APP + 1;
@@ -20,6 +21,32 @@ constexpr COLORREF Canvas = RGB(245, 247, 251), Ink = RGB(24, 35, 56),
                    Muted = RGB(111, 123, 144), Blue = RGB(37, 99, 235),
                    Border = RGB(225, 231, 240);
 HWND keyBox, windowHandle;
+std::filesystem::path savedKeyPath() {
+  wchar_t path[MAX_PATH]{};
+  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path))) return {};
+  return std::filesystem::path(path) / L"YilaiCodexSwitcher" / L"api-key.txt";
+}
+void loadSavedKey() {
+  auto path = savedKeyPath();
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return;
+  std::string value((std::istreambuf_iterator<char>(in)), {});
+  int n = MultiByteToWideChar(CP_UTF8, 0, value.data(), int(value.size()), nullptr, 0);
+  std::wstring key(n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.data(), int(value.size()), key.data(), n);
+  SetWindowTextW(keyBox, key.c_str());
+}
+void saveKey(const std::wstring &key) {
+  auto path = savedKeyPath();
+  if (path.empty()) return;
+  std::filesystem::create_directories(path.parent_path());
+  int n = WideCharToMultiByte(CP_UTF8, 0, key.data(), int(key.size()), nullptr, 0, nullptr, nullptr);
+  std::string value(n, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, key.data(), int(key.size()), value.data(), n, nullptr, nullptr);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out.write(value.data(), std::streamsize(value.size()));
+  SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_HIDDEN);
+}
 HFONT bodyFont, titleFont, smallFont, buttonFont;
 HBRUSH background, whiteBrush;
 bool busy = false, showKey = false, failed = false, warning = false;
@@ -153,6 +180,7 @@ void begin(HWND window, int id) {
     InvalidateRect(window, nullptr, FALSE);
     return;
   }
+  if (id == Api) saveKey(key);
   auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : id == RepairHistory ? app::Action::RepairHistory : app::Action::Cleanup;
   busy = true;
   operationStarted = GetTickCount64();
@@ -199,6 +227,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     SendMessageW(keyBox, WM_SETFONT, WPARAM(bodyFont), TRUE);
     SendMessageW(keyBox, EM_SETPASSWORDCHAR, L'●', 0);
     SendMessageW(keyBox, EM_SETCUEBANNER, FALSE, LPARAM(L"粘贴你的 API Key"));
+    loadSavedKey();
     button(window, Eye, L"显示", 628, 190, 48, 28);
     button(window, Api, L"配置易来 API · 启用生图", 52, 248, 310, 50);
     button(window, Official, L"切换到官方", 378, 248, 310, 50);
@@ -384,7 +413,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 560};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.17", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.3.18", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);

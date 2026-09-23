@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 final class Controller: ObservableObject {
-    @Published var key = ""
+    @Published var key = UserDefaults.standard.string(forKey: "yilai.apiKey") ?? ""
     @Published var reveal = false
     @Published var busy = false
     @Published var failed = false
@@ -20,6 +20,7 @@ final class Controller: ObservableObject {
         warning = false
         message = operation == .repairHistory ? "正在修复旧易来对话，请稍候…" : operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
+        if operation == .configure { UserDefaults.standard.set(token, forKey: "yilai.apiKey") }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let outcome: Result<OperationOutcome, Error> = Result { try service.run(operation, key: token) }
             DispatchQueue.main.async { [self] in
@@ -28,7 +29,6 @@ final class Controller: ObservableObject {
                 case .success(let result):
                     message = result.message
                     warning = result.warning
-                    if operation == .configure { key = "" }
                 case .failure(let error):
                     failed = true
                     message = error.localizedDescription
@@ -175,7 +175,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.17"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "易来 Codex 配置器 v3.3.18"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in

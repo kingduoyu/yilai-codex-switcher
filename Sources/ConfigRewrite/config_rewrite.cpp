@@ -876,7 +876,8 @@ extern "C" char *yilai_configure_catalog(const char *configured, const char *pat
     auto *profile = active_profile(root);
     auto &modelScope = profile && profile->contains("model") ? *profile : root;
     const auto model = modelScope["model"].value_or(std::string());
-    if (model != "gpt-5.6-sol" && model != "gpt-5.6-terra" && model != "gpt-6-astra") {
+    if (model != "gpt-5.6-sol" && model != "gpt-6-sol" &&
+        model != "gpt-5.6-terra" && model != "gpt-6-astra") {
       modelScope.insert_or_assign("model", "gpt-5.6-sol");
     }
     auto *result = copy_string(format(root));
