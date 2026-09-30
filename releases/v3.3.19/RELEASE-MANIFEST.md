@@ -23,6 +23,8 @@
 
 ### 教程同步补记（2026-09-30）
 
+- 最终统一入口：`usage-guide` 已改为 `https://api.yilai-ai.com/docs/tutorial/`，不再带版本参数。公开设置回读及实际入口 v3.3.19 验收通过。下述带版本参数的地址为中间修复记录，已被固定入口取代。发布流程改为更新唯一页面并核验所有入口，不维护两套教程。
+
 - 已通过管理 API 更新唯一 `usage-guide`（配置教程）入口为 `https://api.yilai-ai.com/docs/tutorial/index.html?v=20260930-v3319`，保留其他菜单项与属性。公开设置接口回读一致；从该实际菜单 URL 请求页面，HTTP 200、显示版本及更新说明均为 v3.3.19。
 
 - 已将本地教程及线上 `https://api.yilai-ai.com/docs/tutorial/` 的版本与更新说明链接更新为 `v3.3.19`，保留两个 `releases/latest/download` 固定下载地址。
