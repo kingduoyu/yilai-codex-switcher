@@ -105,13 +105,38 @@ function Assert-Candidate([string]$Path) {
     }
 }
 
-function Save-Result([string]$Status, [string]$FailureStage) {
-    $messages = @{
-        success = 'The software update completed.'
-        rolled_back = 'The update failed. The previous executable was restored and restarted.'
-        failed = 'The update did not complete. The previous executable was kept.'
-        rollback_failed = 'The update failed. Automatic recovery could not finish; the saved backup is retained.'
+function Replace-Executable([string]$From, [bool]$Restore = $false) {
+    $useRename = $Restore
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $expectedDigest = if ($Restore) { $originalDigest } else { $Sha256 }
+    while ($timer.ElapsedMilliseconds -lt 5000) {
+        $null = Assert-Path $From $false
+        $null = Assert-Path $Target $false $Restore
+        $null = Assert-Path $Backup $false
+        if ((Get-Digest $From) -cne $expectedDigest -or
+            (-not $Restore -and (Get-Digest $Target) -cne $originalDigest)) {
+            throw 'Executable changed before replacement.'
+        }
+        $code = [YilaiUpdateNative]::ReplaceOnce($Target, $From, $useRename)
+        if ($code -eq 0) { return }
+        if (-not $useRename -and $code -in @(1, 50, 120, 1175)) {
+            # Recheck both hashes before a same-volume rename that bypasses ACL merging.
+            $useRename = $true
+            continue
+        }
+        if ($code -notin @(5, 32, 33)) { throw 'Executable replacement failed.' }
+        $remaining = 5000 - $timer.ElapsedMilliseconds
+        if ($remaining -le 0) { break }
+        Start-Sleep -Milliseconds ([int][Math]::Min(200, $remaining))
     }
+    throw 'Executable replacement remained locked past the update deadline.'
+}
+
+function Save-Result([string]$Status, [string]$FailureStage) {
+    # Keep the script ASCII so Windows PowerShell 5.1 does not require a UTF-8 BOM.
+    $messages = ConvertFrom-Json @'
+{"success":"\u8f6f\u4ef6\u66f4\u65b0\u5b8c\u6210\u3002","rolled_back":"\u8f6f\u4ef6\u66f4\u65b0\u5931\u8d25\uff0c\u5df2\u6062\u590d\u5e76\u91cd\u65b0\u542f\u52a8\u65e7\u7248\u672c\u3002","failed":"\u8f6f\u4ef6\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u539f\u7a0b\u5e8f\u5df2\u4fdd\u7559\u3002","rollback_failed":"\u8f6f\u4ef6\u66f4\u65b0\u5931\u8d25\uff0c\u81ea\u52a8\u6062\u590d\u672a\u5b8c\u6210\u3002\u65e7\u7248\u5907\u4efd\u4fdd\u7559\u5728\u7a0b\u5e8f\u65c1\uff0c\u8bf7\u624b\u52a8\u6062\u590d\u3002"}
+'@
     $receipt = [ordered]@{
         schema_version = 1
         product = 'YilaiCodexSwitcher'
@@ -121,7 +146,7 @@ function Save-Result([string]$Status, [string]$FailureStage) {
         version = $Version
         status = $Status
         stage = $FailureStage
-        message = $messages[$Status]
+        message = $messages.$Status
         timestamp_utc = [DateTime]::UtcNow.ToString('o')
     }
     $text = $receipt | ConvertTo-Json -Compress
@@ -216,6 +241,12 @@ public static class YilaiUpdateNative {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool MoveFileExW(string source, string target, uint flags);
+    public static int ReplaceOnce(string target, string source, bool rename) {
+        // PowerShell converts a null string argument to an empty path; keep native nulls in C#.
+        bool replaced = rename ? MoveFileExW(source, target, 9) :
+            ReplaceFileW(target, source, null, 0, IntPtr.Zero, IntPtr.Zero);
+        return replaced ? 0 : Marshal.GetLastWin32Error();
+    }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct StartupInfo {
         public uint size; public string reserved, desktop, title;
@@ -276,6 +307,10 @@ public static class YilaiUpdateNative {
         throw 'Original application did not exit within the update deadline.'
     }
     $oldExited = $true
+    if ($null -ne $oldProcess) {
+        $oldProcess.Dispose()
+        $oldProcess = $null
+    }
     Assert-Candidate $Source
     $null = Assert-Path $Target $false
     if ((Get-Digest $Target) -cne $originalDigest) { throw 'Original executable changed before replacement.' }
@@ -288,13 +323,7 @@ public static class YilaiUpdateNative {
     $null = Assert-Path $Source $false
     $null = Assert-Path $Backup $false
     $replacementAttempted = $true
-    if (-not [YilaiUpdateNative]::ReplaceFileW($Target, $Source, $null, 0, [IntPtr]::Zero, [IntPtr]::Zero)) {
-        $replaceError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        if ($replaceError -notin @(1, 50, 120) -or
-            -not [YilaiUpdateNative]::MoveFileExW($Source, $Target, 9)) {
-            throw 'Executable replacement failed.'
-        }
-    }
+    Replace-Executable $Source
     Assert-Candidate $Target
     $phase = 'launch'
     $newProcess = [YilaiUpdateNative]::StartNormal($Target)
@@ -328,8 +357,8 @@ public static class YilaiUpdateNative {
                 Copy-NewFile $Backup $restore
                 if ((Get-Digest $restore) -cne $originalDigest) { throw 'Rollback copy verification failed.' }
                 $null = Assert-Path $Target $false $true
-                if (-not [YilaiUpdateNative]::MoveFileExW($restore, $Target, 9) -or
-                    (Get-Digest $Target) -cne $originalDigest) { throw 'Rollback replacement failed.' }
+                Replace-Executable $restore $true
+                if ((Get-Digest $Target) -cne $originalDigest) { throw 'Rollback replacement failed.' }
             }
             $status = 'rolled_back'
         } catch { $status = 'rollback_failed' }

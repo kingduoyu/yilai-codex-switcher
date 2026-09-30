@@ -484,7 +484,7 @@ enum UpdateInstaller {
         try regularFile(executable)
         guard files.isExecutableFile(atPath: executable.path) else { throw AppError(message: "更新应用不可执行。") }
         _ = try tool("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], in: stage, timeout: 20)
-        _ = try tool("/usr/bin/lipo", ["-verify_arch", "x86_64", "arm64", executable.path], in: stage, timeout: 10)
+        _ = try tool("/usr/bin/lipo", [executable.path, "-verify_arch", "x86_64", "arm64"], in: stage, timeout: 10)
         if selfTest {
             let sandbox = stage.appendingPathComponent("self-test", isDirectory: true)
             let temporary = sandbox.appendingPathComponent("tmp", isDirectory: true)

@@ -214,7 +214,7 @@ def signed_fixture(source, destination, version, role, case_root, entitlements, 
             and not actual.get("com.apple.security.network.client")
             and not actual.get("com.apple.security.network.server"),
             "Fixture signature does not deny network access")
-    run(["/usr/bin/lipo", "-verify_arch", "x86_64", "arm64", str(destination / "Contents/MacOS" / EXECUTABLE)])
+    run(["/usr/bin/lipo", str(destination / "Contents/MacOS" / EXECUTABLE), "-verify_arch", "x86_64", "arm64"])
     return bundle_sha256(destination)
 
 
@@ -342,7 +342,7 @@ def main():
     require(parts[2] < 9999, "Fixture version patch cannot be incremented")
     new_version = f"{parts[0]}.{parts[1]}.{parts[2] + 1}"
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(source)])
-    run(["/usr/bin/lipo", "-verify_arch", "x86_64", "arm64", str(source / "Contents/MacOS" / EXECUTABLE)])
+    run(["/usr/bin/lipo", str(source / "Contents/MacOS" / EXECUTABLE), "-verify_arch", "x86_64", "arm64"])
     original_hash = bundle_sha256(source)
     repo = Path(__file__).resolve().parent.parent
     dist = repo / "dist"
