@@ -54,8 +54,10 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 
+更新回归：pwsh -File Tests/update-helper.ps1 验证 Windows 替换、哈希失败和启动失败回退；python Tests/model-update.py dist/test-driver.exe 验证目录独立写入及后续配置保留。macOS 工作流运行 Tests/macos-update.py，验证实际安装、重开、旧版备份及替换失败恢复；新版提示截图必须通过黄色圆点像素检查。
+
 运行时回归：pwsh -File Tests/run-runtime.ps1 -Codex <codex.exe绝对路径>。来源回归：python Tests/source-integration.py dist/test-driver.exe --auto-runtime。测试采用隔离目录和本机模拟服务，不调用付费模型。运行时发现与诊断回归见 Tests/runtime-discovery.py。
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-最近已发布版本 v3.3.19 的证据见 releases/v3.3.19/RELEASE-MANIFEST.md；v3.4.0 为当前开发版本。
+本版发布证据见 releases/v3.4.0/RELEASE-MANIFEST.md。
