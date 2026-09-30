@@ -134,6 +134,7 @@ final class Controller: ObservableObject {
 
 private struct SwitchButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
+    var primary = true
     private let blue = Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)
 
     func makeBody(configuration: Configuration) -> some View {
@@ -141,9 +142,10 @@ private struct SwitchButtonStyle: ButtonStyle {
             .font(.system(size: 16, weight: .semibold))
             .frame(maxWidth: .infinity)
             .frame(height: 48)
-            .foregroundStyle(Color.white)
-            .background(blue)
+            .foregroundStyle(primary ? Color.white : Color.primary)
+            .background(primary ? blue : Color.white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? blue : Color(red: 225 / 255, green: 231 / 255, blue: 240 / 255), lineWidth: 1))
             .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.55)
     }
 }
@@ -244,12 +246,12 @@ struct Content: View {
                     .frame(height: 30)
                 }
 
-                Button("配置易来 API · 启用生图") { model.execute(.configure) }
-                    .buttonStyle(SwitchButtonStyle())
-
-                Button("切换到官方") { model.execute(.official) }
-                    .buttonStyle(.borderedProminent)
-
+                HStack(spacing: 12) {
+                    Button("配置易来 API · 启用生图") { model.execute(.configure) }
+                        .buttonStyle(SwitchButtonStyle())
+                    Button("切换到官方") { model.execute(.official) }
+                        .buttonStyle(SwitchButtonStyle(primary: false))
+                }
             }
             .padding(24)
             .background(Color.white)
