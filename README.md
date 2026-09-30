@@ -42,6 +42,8 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 软件更新仍使用 GitHub stable latest Release。必须同时上传固定名称 `YilaiCodexSwitcher.exe`、`YilaiCodexSwitcher-macOS-universal.dmg` 和自动更新用的 `YilaiCodexSwitcher-macOS-universal.zip`；三者来自同一源码。更新器核对 GitHub 附件的 SHA-256、大小、固定仓库 URL 和实际程序版本，不安装预发布或旧版。Windows 更新辅助程序随 EXE 内嵌，macOS 辅助程序随应用生成；都保留回退副本，不触碰 Codex 数据。传输依赖 HTTPS 与 GitHub 发布权限，未增加独立代码签名服务。
 
+先创建草稿并上传三个附件，再通过 `gh release view` 或 Release 列表取得实际 Release ID，读取 `/repos/kingduoyu/yilai-codex-switcher/releases/<id>` 核对三个附件均为 uploaded，固定名称、大小和非空 digest 与本地产物一致，全部通过后才解除草稿。按标签读取草稿可能返回 404；任何命令退出码非零或核验失败都必须停止，不得继续发布。正式发布后再核验 stable latest 和附件元数据。
+
 ## 开发与验证
 
 使用教程和配置教程统一指向 `https://api.yilai-ai.com/docs/tutorial/`，不使用版本参数或第二套页面。发布只更新唯一教程 HTML，并从公开设置接口读取实际菜单入口核验；旧 `index.html` 兼容入口必须返回同一内容。
