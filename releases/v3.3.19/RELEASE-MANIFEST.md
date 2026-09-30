@@ -21,5 +21,7 @@
 
 ## 发布
 
-发布目标：GitHub Release `v3.3.19`。固定附件名保持不变；发布后仅核对远端元数据，不回下载 Release 附件。
+已发布：https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.19 。GitHub latest 指向 `v3.3.19`，非草稿、非预发布。标签提交 `63addc0`，应用源码与上述构建提交一致。
+
+两个固定名称附件状态均为 uploaded，远端元数据 SHA-256 与上表一致。未回下载 Release 附件。已验证产物复制至 `publish/win-x64` 与 `publish/mac-universal`，固定名称副本哈希核验通过。
 
