@@ -21,6 +21,13 @@
 
 ## 发布
 
+### 教程同步补记（2026-09-30）
+
+- 已将本地教程及线上 `https://api.yilai-ai.com/docs/tutorial/` 的版本与更新说明链接更新为 `v3.3.19`，保留两个 `releases/latest/download` 固定下载地址。
+- 公开页面 HTTP 200，版本、更新链接、下载地址核验通过，响应字节与本地源文件一致。页面 SHA-256：`28949e7b071f2850f6382712f68b5a993b837416d57c29a0f525c10d55c9670c`。
+- 日本服务器静态页面原子替换前保留备份：`/root/tutorial-backups/index-before-v3.3.19-20260930.html`，备份哈希与替换前基线一致；未重启应用或数据库。
+- 教程同步与线上核验已加入配置器维护入口的固定发布收尾流程。
+
 已发布：https://github.com/kingduoyu/yilai-codex-switcher/releases/tag/v3.3.19 。GitHub latest 指向 `v3.3.19`，非草稿、非预发布。标签提交 `63addc0`，应用源码与上述构建提交一致。
 
 两个固定名称附件状态均为 uploaded，远端元数据 SHA-256 与上表一致。未回下载 Release 附件。已验证产物复制至 `publish/win-x64` 与 `publish/mac-universal`，固定名称副本哈希核验通过。

@@ -36,6 +36,8 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 ## 开发与验证
 
+发布收尾必须同步使用教程，固定流程见上一级 `配置器/README.md` 的“发布收尾：同步使用教程（必做）”。GitHub Release 完成后，更新教程显示版本及更新说明链接，部署静态页面并核验公开 URL；保留固定下载地址。教程未同步或核验未通过时，不得宣布整个发布完成。每次结果仅记录在对应 `releases/<版本>/RELEASE-MANIFEST.md`。
+
 共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；手动历史修复：Sources/HistoryRepair；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
