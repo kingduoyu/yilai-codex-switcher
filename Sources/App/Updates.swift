@@ -51,7 +51,7 @@ struct ValidatedCatalog {
 }
 
 enum UpdateProtocol {
-    static let version = "3.4.0"
+    static let version = "3.4.1"
     static let bundleID = "com.yilai.codex-switcher"
     static let asset = "YilaiCodexSwitcher-macOS-universal.zip"
     static let releaseURL = URL(string: "https://api.github.com/repos/kingduoyu/yilai-codex-switcher/releases/latest")!

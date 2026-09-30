@@ -19,12 +19,13 @@ constexpr UINT Progress = WM_APP + 2;
 constexpr UINT Checked = WM_APP + 3;
 ULONGLONG operationStarted = 0;
 std::wstring progressStage;
-constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004, RepairHistory = 1006;
+constexpr int Api = 1001, Official = 1002, Reset = 1003, Eye = 1004;
 constexpr int Software = 1007, Models = 1008, Notes = 1009;
 constexpr int ModelList = 1010, CheckSoftware = 1011, InstallSoftware = 1012;
 app::UpdateInfo latest;
 bool checkingUpdate = false;
-std::wstring updateText = L"软件 v3.4.0";
+std::wstring updateText = L"尚未检查更新";
+bool isolatedUI = false;
 struct CheckResult {
   app::UpdateInfo info;
   std::wstring error;
@@ -40,6 +41,7 @@ std::filesystem::path savedKeyPath() {
   return std::filesystem::path(path) / L"YilaiCodexSwitcher" / L"api-key.txt";
 }
 void loadSavedKey() {
+  if (isolatedUI) return;
   auto path = savedKeyPath();
   std::ifstream in(path, std::ios::binary);
   if (!in) return;
@@ -50,6 +52,7 @@ void loadSavedKey() {
   SetWindowTextW(keyBox, key.c_str());
 }
 void saveKey(const std::wstring &key) {
+  if (isolatedUI) return;
   auto path = savedKeyPath();
   if (path.empty()) return;
   std::filesystem::create_directories(path.parent_path());
@@ -60,10 +63,11 @@ void saveKey(const std::wstring &key) {
   out.write(value.data(), std::streamsize(value.size()));
   SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_HIDDEN);
 }
-HFONT bodyFont, titleFont, smallFont, buttonFont;
+HFONT bodyFont, titleFont, smallFont, buttonFont, iconFont;
 HBRUSH background, whiteBrush;
+HBITMAP logo;
 bool busy = false, showKey = false, failed = false, warning = false;
-std::wstring modeText, statusText = L"准备就绪。填写 Key，即可配置 API 和生图。";
+std::wstring modeText, statusText = L"准备就绪。";
 struct Result {
   bool ok = false;
   bool warning = false;
@@ -76,10 +80,39 @@ std::wstring fromUtf8(const std::string &s) {
   MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), out.data(), n);
   return out;
 }
-HFONT font(int size, int weight = FW_NORMAL) {
+HFONT font(int size, int weight = FW_NORMAL, const wchar_t *family = L"Microsoft YaHei UI") {
   return CreateFontW(-size, 0, 0, 0, weight, FALSE, FALSE, FALSE,
                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+                     CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, family);
+}
+HBITMAP loadLogo(HINSTANCE instance) {
+  auto resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_LOGO), RT_RCDATA);
+  if (!resource) return nullptr;
+  auto bytes = LockResource(LoadResource(instance, resource));
+  Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+  Microsoft::WRL::ComPtr<IWICStream> stream;
+  Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+  Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+  Microsoft::WRL::ComPtr<IWICBitmapScaler> scaler;
+  Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+  if (!bytes || FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+      FAILED(factory->CreateStream(&stream)) ||
+      FAILED(stream->InitializeFromMemory(static_cast<BYTE *>(bytes), SizeofResource(instance, resource))) ||
+      FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)) ||
+      FAILED(decoder->GetFrame(0, &frame)) || FAILED(factory->CreateBitmapScaler(&scaler)) ||
+      FAILED(scaler->Initialize(frame.Get(), 64, 64, WICBitmapInterpolationModeFant)) ||
+      FAILED(factory->CreateFormatConverter(&converter)) ||
+      FAILED(converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                  WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) return nullptr;
+  BITMAPINFO info{};
+  info.bmiHeader = {sizeof(BITMAPINFOHEADER), 64, -64, 1, 32, BI_RGB};
+  void *pixels = nullptr;
+  auto bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+  if (!bitmap || FAILED(converter->CopyPixels(nullptr, 64 * 4, 64 * 64 * 4, static_cast<BYTE *>(pixels)))) {
+    if (bitmap) DeleteObject(bitmap);
+    return nullptr;
+  }
+  return bitmap;
 }
 void text(HDC dc, const std::wstring &value, RECT rect, HFONT f, COLORREF color,
           UINT flags = DT_LEFT | DT_SINGLELINE | DT_VCENTER) {
@@ -114,7 +147,7 @@ void refreshModels() {
   const auto summary = L"当前模型列表（" + std::to_wstring(models["models"].size()) + L"）";
   SendMessageW(modelBox, CB_ADDSTRING, 0, LPARAM(summary.c_str()));
   for (const auto &model : models["models"]) {
-    const auto label = fromUtf8(model.at("display_name").get<std::string>() + "  " + model.at("slug").get<std::string>());
+    const auto label = fromUtf8(model.at("display_name").get<std::string>());
     SendMessageW(modelBox, CB_ADDSTRING, 0, LPARAM(label.c_str()));
   }
   SendMessageW(modelBox, CB_SETCURSEL, 0, 0);
@@ -140,31 +173,29 @@ void paint(HWND window, HDC dc) {
   RECT r;
   GetClientRect(window, &r);
   FillRect(dc, &r, background);
-  rounded(dc, {28, 28, 74, 74}, Blue, Blue, 14);
-  text(dc, L"Y", {28, 28, 74, 74}, titleFont, RGB(255, 255, 255),
-       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  text(dc, L"易来 Codex", {88, 22, 440, 58}, titleFont, Ink);
-  text(dc, L"配置 API，继续创作。", {88, 59, 440, 82}, smallFont, Muted);
-  text(dc, updateText, {492, 65, 712, 88}, smallFont, Muted,
-       DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-  rounded(dc, {28, 114, 712, 410}, RGB(255, 255, 255), Border, 20);
+  HDC asset = CreateCompatibleDC(dc);
+  auto previous = SelectObject(asset, logo);
+  AlphaBlend(dc, 20, 16, 64, 64, asset, 0, 0, 64, 64, {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA});
+  SelectObject(asset, previous);
+  DeleteDC(asset);
+  text(dc, L"易来 Codex", {88, 28, 440, 74}, titleFont, Ink);
+  rounded(dc, {28, 114, 712, 368}, RGB(255, 255, 255), Border, 16);
   text(dc, L"易来 API Key", {52, 138, 330, 166}, buttonFont, Ink);
   text(dc, modeText, {424, 138, 688, 166}, smallFont, Muted,
        DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
   rounded(dc, {52, 180, 688, 228}, RGB(255, 255, 255), Border, 10);
   text(dc, L"模型目录", {52, 242, 135, 274}, smallFont, Muted);
-  text(dc, L"API 自动启用生图 · 官方使用 ChatGPT 登录", {52, 350, 688, 380}, smallFont,
-       Muted, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
   const auto statusColor = failed ? RGB(157, 55, 46)
                            : warning ? RGB(161, 98, 7)
                                      : Ink;
-  text(dc, failed ? (currentOperation == RepairHistory ? L"历史修复失败" : L"配置失败")
-                  : warning ? (currentOperation == RepairHistory ? L"历史修复需要处理" : L"配置已保留，需要处理")
-                  : busy    ? (currentOperation == RepairHistory ? L"正在修复历史" : L"正在切换")
+  const bool updating = currentOperation == Models || currentOperation == InstallSoftware;
+  text(dc, failed ? (updating ? L"更新失败" : L"配置失败")
+                  : warning ? L"配置已保留，需要处理"
+                  : busy    ? (updating ? L"正在更新" : L"正在配置")
                             : L"连接状态",
-       {32, 451, 260, 476}, smallFont,
+       {32, 410, 708, 438}, smallFont,
        failed ? RGB(177, 67, 56) : warning ? RGB(161, 98, 7) : Muted);
-  text(dc, statusText, {32, 481, 708, 566}, bodyFont, statusColor,
+  text(dc, statusText, {32, 448, 708, 558}, bodyFont, statusColor,
        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
   text(dc, L"操作前请退出 Codex 和 CC-Switch", {28, 582, 420, 608}, smallFont,
        Muted);
@@ -173,35 +204,44 @@ void drawButton(const DRAWITEMSTRUCT &item) {
   bool enabled = !(item.itemState & ODS_DISABLED);
   bool down = item.itemState & ODS_SELECTED;
   const bool primary = item.CtlID == Api,
-             quiet = item.CtlID == Reset || item.CtlID == RepairHistory || item.CtlID == Eye || item.CtlID == Software;
+             quiet = item.CtlID == Reset || item.CtlID == Eye || item.CtlID == Software;
+  const bool onPanel = item.CtlID == Api || item.CtlID == Official || item.CtlID == Eye || item.CtlID == Models;
+  FillRect(item.hDC, &item.rcItem, onPanel ? whiteBrush : background);
   COLORREF fill =
-      quiet ? (item.CtlID == Eye ? RGB(255, 255, 255) : Canvas)
+      quiet ? (down ? RGB(232, 236, 242) : onPanel ? RGB(255, 255, 255) : Canvas)
       : primary
           ? (enabled ? down ? RGB(29, 78, 216) : Blue : RGB(161, 184, 234))
       : down ? RGB(239, 243, 249)
              : RGB(255, 255, 255);
-  rounded(item.hDC, item.rcItem, fill,
-          quiet     ? fill
-          : primary ? fill
-                    : Border,
-          12);
+  if (!quiet || down)
+    rounded(item.hDC, item.rcItem, fill, quiet || primary ? fill : Border, 12);
   wchar_t label[100]{};
   GetWindowTextW(item.hwndItem, label, 100);
   auto labelRect = item.rcItem;
-  if (item.CtlID == Software && latest.available) {
-    auto brush = CreateSolidBrush(RGB(234, 179, 8));
-    auto old = SelectObject(item.hDC, brush);
-    auto oldPen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
-    Ellipse(item.hDC, item.rcItem.left + 8, item.rcItem.top + 13, item.rcItem.left + 16, item.rcItem.top + 21);
-    SelectObject(item.hDC, oldPen); SelectObject(item.hDC, old); DeleteObject(brush);
-    labelRect.left += 22;
+  if (item.CtlID == Software) {
+    labelRect.right -= 28;
+    if (latest.available) {
+      const auto oldFont = SelectObject(item.hDC, smallFont);
+      SIZE extent{};
+      GetTextExtentPoint32W(item.hDC, label, lstrlenW(label), &extent);
+      SelectObject(item.hDC, oldFont);
+      const int x = labelRect.right - extent.cx - 16;
+      const int y = (item.rcItem.top + item.rcItem.bottom) / 2 - 4;
+      auto brush = CreateSolidBrush(RGB(234, 179, 8));
+      auto old = SelectObject(item.hDC, brush);
+      auto oldPen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
+      Ellipse(item.hDC, x, y, x + 8, y + 8);
+      SelectObject(item.hDC, oldPen); SelectObject(item.hDC, old); DeleteObject(brush);
+    }
+    text(item.hDC, L"\uE70D", {item.rcItem.right - 22, item.rcItem.top, item.rcItem.right - 4, item.rcItem.bottom},
+         iconFont, enabled ? Muted : RGB(158, 170, 190), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   text(item.hDC, label, labelRect, quiet ? smallFont : buttonFont,
        enabled ? (primary ? RGB(255, 255, 255)
                   : quiet ? Muted
                           : Ink)
                : RGB(158, 170, 190),
-       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+       (item.CtlID == Software ? DT_RIGHT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE);
   if (item.itemState & ODS_FOCUS) {
     auto focus = item.rcItem;
     InflateRect(&focus, -4, -4);
@@ -224,17 +264,17 @@ void begin(HWND window, int id) {
     return;
   }
   if (id == Api) saveKey(key);
-  auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : id == Models ? app::Action::UpdateModels : id == RepairHistory ? app::Action::RepairHistory : app::Action::Cleanup;
+  auto action = id == Api ? app::Action::Configure : id == Official ? app::Action::Official : id == Models ? app::Action::UpdateModels : app::Action::Cleanup;
   busy = true;
   operationStarted = GetTickCount64();
-  progressStage = id == RepairHistory ? L"正在修复旧易来对话" : L"准备操作";
+  progressStage = L"准备操作";
   SetTimer(window, 1, 1000, nullptr);
   failed = false;
   warning = false;
   statusText =
-      id == InstallSoftware ? L"正在下载并校验软件更新…" : id == Models ? L"正在更新模型目录…" : id == RepairHistory ? L"正在修复旧易来对话，请稍候…" : id == Reset ? L"正在停用旧配置…" : id == Official ? L"正在切换官方…" : L"正在配置 API 和生图，请稍候…";
+      id == InstallSoftware ? L"正在下载并校验软件更新…" : id == Models ? L"正在更新模型目录…" : id == Reset ? L"正在停用旧配置…" : id == Official ? L"正在切换官方…" : L"正在配置 API 和生图，请稍候…";
   progressStage = statusText;
-  for (int child : {Api, Official, Reset, Eye, RepairHistory, Software, Models, ModelList})
+  for (int child : {Api, Official, Reset, Eye, Software, Models, ModelList})
     EnableWindow(GetDlgItem(window, child), FALSE);
   EnableWindow(keyBox, FALSE);
   InvalidateRect(window, nullptr, FALSE);
@@ -282,9 +322,10 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
   case WM_CREATE: {
     windowHandle = window;
     bodyFont = font(15);
-    titleFont = font(27, FW_SEMIBOLD);
+    titleFont = font(24, FW_SEMIBOLD);
     smallFont = font(13);
     buttonFont = font(16, FW_MEDIUM);
+    iconFont = font(10, FW_NORMAL, L"Segoe MDL2 Assets");
     keyBox = CreateWindowExW(
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, 66,
@@ -297,14 +338,16 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     modelBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
         140, 244, 410, 244, window, HMENU(INT_PTR(ModelList)), nullptr, nullptr);
     SendMessageW(modelBox, WM_SETFONT, WPARAM(bodyFont), TRUE);
-    SendMessageW(modelBox, CB_SETDROPPEDWIDTH, 548, 0);
+    SendMessageW(modelBox, CB_SETDROPPEDWIDTH, 410, 0);
+    SendMessageW(modelBox, CB_SETITEMHEIGHT, WPARAM(-1), 28);
+    SendMessageW(modelBox, CB_SETITEMHEIGHT, 0, 28);
     button(window, Models, L"更新模型", 564, 242, 124, 34);
     button(window, Api, L"配置易来 API · 启用生图", 52, 294, 310, 50);
     button(window, Official, L"切换到官方", 378, 294, 310, 50);
     button(window, Reset, L"重置配置", 624, 582, 88, 26);
-    button(window, RepairHistory, L"修复旧易来对话", 464, 582, 148, 26);
-    button(window, Software, L"版本 v3.4.0", 492, 28, 220, 34);
-    const auto previous = app::previousUpdateResult();
+    const auto version = L"v" + fromUtf8(updates::Version);
+    button(window, Software, version.c_str(), 492, 34, 220, 34);
+    const auto previous = isolatedUI ? std::wstring() : app::previousUpdateResult();
     if (!previous.empty()) statusText = previous;
     refresh();
     return 0;
@@ -336,12 +379,16 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
         SendMessageW(keyBox, EM_SETPASSWORDCHAR, showKey ? 0 : L'●', 0);
         SetWindowTextW(GetDlgItem(window, Eye), showKey ? L"隐藏" : L"显示");
         InvalidateRect(keyBox, nullptr, TRUE);
-      } else if (id == Api || id == Official || id == Reset || id == RepairHistory)
+      } else if (id == Api || id == Official || id == Reset)
         begin(window, id);
       else if (id == Models) begin(window, id);
       else if (id == Software) {
         if (!busy && !checkingUpdate) {
           HMENU menu = CreatePopupMenu();
+          const auto version = L"当前版本 v" + fromUtf8(updates::Version);
+          AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, version.c_str());
+          AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, updateText.c_str());
+          AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
           AppendMenuW(menu, MF_STRING, CheckSoftware, L"检查更新");
           if (latest.available) {
             AppendMenuW(menu, MF_STRING, Notes, L"更新说明");
@@ -385,7 +432,7 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
       DestroyWindow(window);
       return 0;
     }
-    for (int id : {Api, Official, Reset, Eye, RepairHistory, Models, Software, ModelList})
+    for (int id : {Api, Official, Reset, Eye, Models, Software, ModelList})
       EnableWindow(GetDlgItem(window, id), TRUE);
     EnableWindow(GetDlgItem(window, Software), !checkingUpdate);
     EnableWindow(keyBox, TRUE);
@@ -399,8 +446,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     checkingUpdate = false;
     if (result->error.empty()) {
       latest = std::move(result->info);
-      updateText = latest.available ? L"当前 v3.4.0" : L"已是最新版本";
-      const auto label = latest.available ? L"有新版本 " + latest.version : L"版本 v3.4.0";
+      updateText = latest.available ? L"新版本可用" : L"已是最新版本";
+      const auto label = latest.available ? L"有新版本 " + latest.version : L"v" + fromUtf8(updates::Version);
       SetWindowTextW(GetDlgItem(window, Software), label.c_str());
     } else { updateText = result->error; }
     EnableWindow(GetDlgItem(window, Software), !busy);
@@ -418,6 +465,8 @@ LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
     DeleteObject(titleFont);
     DeleteObject(smallFont);
     DeleteObject(buttonFont);
+    DeleteObject(iconFont);
+    DeleteObject(logo);
     DeleteObject(background);
     DeleteObject(whiteBrush);
     PostQuitMessage(0);
@@ -459,6 +508,17 @@ void capture(HWND window, const wchar_t *filename) {
         return TRUE;
       },
       reinterpret_cast<LPARAM>(&context));
+  COMBOBOXINFO combo{sizeof(combo)};
+  if (SendMessageW(modelBox, CB_GETDROPPEDSTATE, 0, 0) && GetComboBoxInfo(modelBox, &combo)) {
+    RECT list;
+    GetWindowRect(combo.hwndList, &list);
+    MapWindowPoints(nullptr, window, reinterpret_cast<POINT *>(&list), 2);
+    const int saved = SaveDC(mem);
+    SetViewportOrgEx(mem, list.left, list.top, nullptr);
+    IntersectClipRect(mem, 0, 0, list.right - list.left, list.bottom - list.top);
+    SendMessageW(combo.hwndList, WM_PRINT, WPARAM(mem), PRF_CLIENT | PRF_NONCLIENT | PRF_ERASEBKGND);
+    RestoreDC(mem, saved);
+  }
   Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
   Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
   Microsoft::WRL::ComPtr<IWICStream> stream;
@@ -470,7 +530,7 @@ void capture(HWND window, const wchar_t *filename) {
   };
   ok(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                       IID_PPV_ARGS(factory.GetAddressOf())));
-  ok(factory->CreateBitmapFromHBITMAP(image, nullptr, WICBitmapUseAlpha,
+  ok(factory->CreateBitmapFromHBITMAP(image, nullptr, WICBitmapIgnoreAlpha,
                                       bitmap.GetAddressOf()));
   ok(factory->CreateStream(stream.GetAddressOf()));
   ok(stream->InitializeFromFilename(filename, GENERIC_WRITE));
@@ -503,18 +563,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     LocalFree(argv);
     return passed ? 0 : 1;
   }
+  const bool screenshot = argc > 2 && std::wstring(argv[1]) == L"--screenshot";
+  isolatedUI = screenshot || GetEnvironmentVariableW(L"YILAI_UI_TEST", nullptr, 0);
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   SetProcessDPIAware();
   INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&controls);
-  // Load the system CJK UI family for hosts where it is installed but not
-  // registered.
-  wchar_t windows[MAX_PATH]{};
-  GetWindowsDirectoryW(windows, MAX_PATH);
-  AddFontResourceExW((std::wstring(windows) + L"\\Fonts\\msyh.ttc").c_str(),
-                     FR_PRIVATE, nullptr);
   background = CreateSolidBrush(Canvas);
   whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+  logo = loadLogo(instance);
+  if (!logo) {
+    LocalFree(argv);
+    CoUninitialize();
+    return 1;
+  }
   WNDCLASSW cls{};
   cls.hInstance = instance;
   cls.lpszClassName = L"YilaiSwitcherV333";
@@ -526,27 +588,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RECT size{0, 0, 740, 626};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   AdjustWindowRect(&size, style, FALSE);
-  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex · v3.4.0", style,
+  HWND window = CreateWindowW(cls.lpszClassName, L"易来 Codex 配置器", style,
                               CW_USEDEFAULT, CW_USEDEFAULT,
                               size.right - size.left, size.bottom - size.top,
                               nullptr, nullptr, instance, nullptr);
-  bool screenshot = argc > 2 && std::wstring(argv[1]) == L"--screenshot";
   ShowWindow(window, screenshot ? SW_SHOWNOACTIVATE : show);
   UpdateWindow(window);
   if (screenshot) {
-    if (argc > 3 && std::wstring(argv[3]) == L"--update-state") {
-      latest.available = true;
-      latest.version = L"v3.4.1";
-      SetWindowTextW(GetDlgItem(window, Software), L"有新版本 v3.4.1");
-      updateText = L"当前 v3.4.0";
-    } else if (argc > 3 && std::wstring(argv[3]) == L"--error-state") {
-      failed = true;
-      statusText =
-          L"删除旧登录文件失败：文件正在被占用。请完全退出 Codex 后重试。";
-    } else if (argc > 3 && std::wstring(argv[3]) == L"--warning-state") {
-      warning = true;
-      statusText = L"API 已配置并保留，但功能探测未完全通过：生图开关未生效（来源：项目 .codex/config.toml）。不会回滚连接，请截图此提示。";
+    bool listOpen = false;
+    for (int i = 3; i < argc; ++i) {
+      const std::wstring state(argv[i]);
+      if (state == L"--update-state") {
+        latest.available = true;
+        latest.version = L"v3.4.2";
+        SetWindowTextW(GetDlgItem(window, Software), L"有新版本 v3.4.2");
+        updateText = L"新版本可用";
+      } else if (state == L"--error-state") {
+        failed = true;
+        statusText = L"检查后台程序失败：请完全退出 Codex 和 CC-Switch 后再操作；关闭窗口后也请检查后台进程。";
+      } else if (state == L"--warning-state") {
+        warning = true;
+        statusText = L"API 已配置并保留，但功能探测未完全通过：生图开关未生效（来源：项目 .codex/config.toml）。不会回滚连接，请截图此提示。";
+      } else if (state == L"--model-list-state") {
+        SetWindowTextW(keyBox, L"synthetic-screenshot-only-key-00000000000000000000000");
+        listOpen = true;
+      }
     }
+    InvalidateRect(window, nullptr, FALSE);
+    RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    if (listOpen) SendMessageW(modelBox, CB_SHOWDROPDOWN, TRUE, 0);
     try {
       capture(window, argv[2]);
       DestroyWindow(window);

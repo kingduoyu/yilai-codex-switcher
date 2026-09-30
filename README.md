@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.4.0
+# 易来 Codex 配置器 v3.4.1
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换；常规切换不处理历史对话归属。
 
@@ -6,7 +6,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 
 ## 使用
 
-启动后后台检查软件新版；有新版时点击 **一键更新**，下载并校验后退出配置器，辅助程序保留旧版、替换并重新打开。失败时显示结果并保留或恢复旧版。可用 **检查更新** 重试，**更新说明** 查看新版说明。macOS 应先把应用复制到可写的 Applications 目录，不能直接在只读 DMG 内更新。
+启动后后台检查软件新版；右上角单行显示当前版本，有新版时显示黄色圆点与新版号。点击版本菜单中的 **一键更新**，下载并校验后退出配置器，辅助程序保留旧版、替换并重新打开。失败时显示结果并保留或恢复旧版。可用 **检查更新** 重试，**更新说明** 查看新版说明。macOS 应先把应用复制到可写的 Applications 目录，不能直接在只读 DMG 内更新。
 
 点击 **更新模型** 可独立同步新模型，无需下载新版软件或填写 Key。操作前退出 Codex 和 CC-Switch，更新后重开 Codex。只更新 `CODEX_HOME/yilai-model-catalog.json`，当前模型、账号、登录和历史不变；官方模式下该目录不生效。已更新的目录会在下一次配置易来 API 时继续使用。
 
@@ -15,8 +15,6 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 3. **切换到官方** 使用官方认证路由，保留现有 auth.json；缺少官方登录时需要重新登录。
 
 重置配置位于界面底部，仅将当前 config.toml 改名加唯一 disabled 后缀，使其失效。不弹确认、不删除原内容、不恢复停用文件、不动登录和历史。重置后重新配置 API。
-
-“修复旧易来对话”是独立手动按钮，无需重新填写 Key。先完成易来 API 配置、退出 Codex 和 CC-Switch，再按需点击；仅将旧 yilai 归属改为 custom，并同步对应 state_5.sqlite 索引。重复 ID、损坏文件、路径冲突或索引失败逐项跳过并汇总提示，已成功项保留，再次点击可补齐未完成索引。不会修改连接、登录、对话正文或已有备份，也不会生成固定名称备份。此按钮不诊断或修复所有网络重连问题。
 
 ## 配置与兼容
 
@@ -50,7 +48,7 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 发布收尾必须同步使用教程，固定流程见上一级 `配置器/README.md` 的“发布收尾：同步使用教程（必做）”。GitHub Release 完成后，更新教程显示版本及更新说明链接，部署静态页面并核验公开 URL；保留固定下载地址。教程未同步或核验未通过时，不得宣布整个发布完成。每次结果仅记录在对应 `releases/<版本>/RELEASE-MANIFEST.md`。
 
-共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；手动历史修复：Sources/HistoryRepair；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
+共享配置规则：Sources/ConfigRewrite；生效来源：Sources/ConfigSources；操作锁：Sources/OperationGuard；错误脱敏：Sources/Diagnostics。Windows 平台代码：Windows；macOS：Sources/App。
 
 Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.exe --self-test，以及 python Tests/windows-ui.py。
 
@@ -60,4 +58,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-本版发布证据见 releases/v3.4.0/RELEASE-MANIFEST.md。
+本版发布证据见 releases/v3.4.1/RELEASE-MANIFEST.md。

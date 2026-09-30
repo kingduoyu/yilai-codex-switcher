@@ -8,7 +8,7 @@
 
 namespace updates {
 using Json = nlohmann::json;
-inline constexpr char Version[] = "3.4.0";
+inline constexpr char Version[] = "3.4.1";
 inline constexpr char ReleaseURL[] = "https://api.github.com/repos/kingduoyu/yilai-codex-switcher/releases/latest";
 inline constexpr char ChannelURL[] = "https://raw.githubusercontent.com/kingduoyu/yilai-codex-switcher/main/model-channel.json";
 inline void require(bool value, const char *message) {

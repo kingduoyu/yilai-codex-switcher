@@ -7,7 +7,7 @@ final class Controller: ObservableObject {
     @Published var busy = false
     @Published var failed = false
     @Published var warning = false
-    @Published var message = "准备就绪。填写 API Key，一键启用易来 API 和生图。"
+    @Published var message = "准备就绪。"
     @Published var mode = ""
     @Published var models: [CatalogModel] = []
     @Published var inspectedModelID = ""
@@ -47,7 +47,7 @@ final class Controller: ObservableObject {
             do {
                 let result = try await updates.checkRelease()
                 release = result
-                updateMessage = result.available ? "有新版本 \(result.version)" : "当前已是最新版本 v\(UpdateProtocol.version)"
+                updateMessage = result.available ? "有新版本 \(result.version)" : "已是最新版本"
                 if !silent && !busy {
                     message = updateMessage
                     failed = false
@@ -110,7 +110,7 @@ final class Controller: ObservableObject {
         busy = true
         failed = false
         warning = false
-        message = operation == .repairHistory ? "正在修复旧易来对话，请稍候…" : operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
+        message = operation == .cleanup ? "正在重置配置…" : operation == .official ? "正在切换官方…" : "正在配置易来 API 并启用生图，请稍候…"
         let token = key
         if operation == .configure { UserDefaults.standard.set(token, forKey: "yilai.apiKey") }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -143,7 +143,7 @@ private struct SwitchButtonStyle: ButtonStyle {
             .frame(height: 48)
             .foregroundStyle(Color.white)
             .background(blue)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.55)
     }
 }
@@ -152,47 +152,44 @@ struct Content: View {
     @ObservedObject var model: Controller
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 24) {
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("易来 Codex").font(.system(size: 28, weight: .semibold))
-                    Text("一键连接，继续创作。")
-                        .font(.system(size: 14))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("易来 Codex").font(.system(size: 24, weight: .semibold))
+                    Text(model.mode)
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel("当前连接：\(model.mode)")
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 12) {
-                    HStack(spacing: 6) {
-                        Circle().fill(model.release?.available == true ? Color.yellow : Color.clear).frame(width: 6, height: 6)
-                        Menu {
-                            Button { model.checkUpdates() } label: { Label("检查更新", systemImage: "arrow.clockwise") }
-                                .disabled(model.checkingUpdate)
-                            Button { model.showReleaseNotes = true } label: { Label("更新说明", systemImage: "text.alignleft") }
-                                .disabled(model.release == nil)
-                            Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
-                                .disabled(model.release?.available != true)
-                            Divider()
-                            Text(model.updateMessage)
-                        } label: {
-                            Text(model.versionBadge)
-                                .font(.system(size: 12, weight: .medium))
-                                .lineLimit(1)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .help(model.updateMessage)
-                        .accessibilityLabel("软件版本与更新")
+                HStack(spacing: 6) {
+                    Circle().fill(model.release?.available == true ? Color.yellow : Color.clear).frame(width: 6, height: 6)
+                    Menu {
+                        Text("当前版本 v\(UpdateProtocol.version)")
+                        Divider()
+                        Button { model.checkUpdates() } label: { Label("检查更新", systemImage: "arrow.clockwise") }
+                            .disabled(model.checkingUpdate)
+                        Button { model.showReleaseNotes = true } label: { Label("更新说明", systemImage: "text.alignleft") }
+                            .disabled(model.release == nil)
+                        Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
+                            .disabled(model.release?.available != true)
+                        Divider()
+                        Text(model.updateMessage)
+                    } label: {
+                        Text(model.versionBadge)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
                     }
-                    .fixedSize()
-                    HStack(spacing: 7) {
-                        Circle().fill(Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)).frame(width: 6, height: 6)
-                        Text(model.mode).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    }
-                    .accessibilityLabel("当前连接：\(model.mode)")
+                    .menuStyle(.borderlessButton)
+                    .help(model.updateMessage)
+                    .accessibilityLabel("软件版本与更新")
                 }
+                .fixedSize()
             }
 
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("易来 API Key").font(.system(size: 14, weight: .medium))
                     HStack(spacing: 12) {
                         Group {
@@ -217,8 +214,8 @@ struct Content: View {
                     .padding(.horizontal, 13)
                     .frame(height: 46)
                     .background(Color(red: 0.98, green: 0.985, blue: 0.993))
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -226,7 +223,7 @@ struct Content: View {
                     HStack(spacing: 12) {
                         Menu {
                             ForEach(model.models) { item in
-                                Button("\(item.displayName) · \(item.slug)") { model.inspectedModelID = item.id }
+                                Button(item.displayName) { model.inspectedModelID = item.id }
                             }
                         } label: {
                             Text(model.inspectedModel?.displayName ?? "模型目录")
@@ -253,16 +250,13 @@ struct Content: View {
                 Button("切换到官方") { model.execute(.official) }
                     .buttonStyle(.borderedProminent)
 
-                Label("生图自动启用 · 官方登录与旧对话兼容", systemImage: "sparkles")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
             }
             .padding(24)
             .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(red: 0.92, green: 0.93, blue: 0.96), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(red: 0.92, green: 0.93, blue: 0.96), lineWidth: 1))
 
-            HStack(alignment: .top, spacing: 9) {
+            HStack(alignment: .top, spacing: 8) {
                 if model.busy {
                     ProgressView().controlSize(.small).padding(.top, 1)
                 } else {
@@ -286,14 +280,6 @@ struct Content: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button { model.execute(.repairHistory) } label: {
-                    Label("修复旧易来对话", systemImage: "clock.arrow.circlepath")
-                        .frame(width: 148, height: 26)
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .help("手动将旧易来对话的供应商归属从 yilai 修复为 custom，无需 API Key；不修复网络连接。")
                 Button("重置配置") { model.execute(.cleanup) }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
@@ -341,12 +327,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.contentMinSize = NSSize(width: 720, height: 700)
-        window.title = "易来 Codex 配置器 v\(UpdateProtocol.version)"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window.title = "易来 Codex 配置器"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             if CommandLine.arguments.contains("--update-state") {
-                controller.release = SoftwareRelease(available: true, version: "v3.4.1", notes: "", url: nil, sha256: nil, size: nil)
-                controller.updateMessage = "有新版本 v3.4.1"
+                controller.release = SoftwareRelease(available: true, version: "v3.4.2", notes: "", url: nil, sha256: nil, size: nil)
+                controller.updateMessage = "有新版本 v3.4.2"
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
                 guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
