@@ -1,3 +1,8 @@
+# v3.3.19：新增 GPT-6.1-Sol 模型
+
+- 新增 `gpt-6.1-sol`，保留原有四个模型及默认选择。
+- Windows/macOS 共用模型目录同步更新，保留根配置及当前 profile 中的 6.1 Sol 选择。
+
 # v3.3.18：新增 GPT-6-Sol 模型
 
 - 内置并发布 `gpt-6-sol`，保留 `gpt-5.6-sol`、`gpt-5.6-terra` 和 `gpt-6-astra`。

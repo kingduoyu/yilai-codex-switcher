@@ -1,4 +1,4 @@
-# 易来 Codex 配置器 v3.3.18
+# 易来 Codex 配置器 v3.3.19
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换；常规切换不处理历史对话归属。
 
@@ -17,7 +17,7 @@ Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启
 ## 配置与兼容
 
 - 使用 CCS 兼容的 custom provider，供应商节点写入独立 bearer token，requires_openai_auth=false，启用生图并将当前 CODEX_HOME/auth.json 移入系统回收站或废纸篓。不生成固定名称的登录备份，已有 auth.json.yilai-disabled 不参与切换，也不阻止配置。
-- 写入内置的 5.6 Sol、6 Sol、5.6 Terra、6 Astra 四个模型和模型目录指向；保留已有合法模型选择，否则默认 5.6 Sol。保留推理档位、MCP、权限等无关配置。配置未显式写权限时，沿用 Codex 桌面端已保存的完全访问模式，不降级为审批模式。
+- 写入内置的 5.6 Sol、6 Sol、6.1 Sol、5.6 Terra、6 Astra 五个模型和模型目录指向；保留已有合法模型选择，否则默认 5.6 Sol。保留推理档位、MCP、权限等无关配置。配置未显式写权限时，沿用 Codex 桌面端已保存的完全访问模式，不降级为审批模式。
 - 主按钮先完成本地连接、模型目录和登录文件处理，再启动隔离的 Codex app-server 做只读最终探测。探测核对实际 provider、地址、认证、模型目录、生图开关和生图授权，并指出覆盖来源；探测或功能冲突不回滚已完成的 API 配置，也不自动修改项目/profile/启动参数。
 - 同一 CODEX_HOME 的配置操作互斥。请勿在写入过程中启动 Codex/CCS。默认使用用户 .codex；设置 CODEX_HOME 时跟随它。
 - 官方切换拒绝含 NUL 的异常配置；写入与回滚前检查文件状态，检测到外部修改时不覆盖。其他 profile 引用的原连接保留，当前 custom/yilai 官方别名不带第三方凭据。
@@ -32,7 +32,7 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 先在 CCS 选择 API 供应商，再退出 CCS 和 Codex，运行本配置器。不要在 CCS 仍选中官方时用外部工具改写连接：CCS 后续可能把磁盘配置回存到当前官方条目。本版不修改 CCS 数据库；若 CCS 使用的配置目录、项目配置、profile、启动参数或托管配置造成最终冲突，配置器会保留 API 配置并直接显示原因。
 
-每次配置都会写入内置 model-catalog.json 中固定的 gpt-5.6-sol、gpt-6-sol、gpt-5.6-terra、gpt-6-astra，到 CODEX_HOME/yilai-model-catalog.json，并更新根配置和当前 profile 的指向；不联网获取模型。其他目录文件不删除。若有其他来源覆盖，最终探测会报告功能缺失和来源，不会因探测不通过而恢复旧连接；重置按钮只改名当前 config.toml，随后重新配置。
+每次配置都会写入内置 model-catalog.json 中固定的 gpt-5.6-sol、gpt-6-sol、gpt-6.1-sol、gpt-5.6-terra、gpt-6-astra，到 CODEX_HOME/yilai-model-catalog.json，并更新根配置和当前 profile 的指向；不联网获取模型。其他目录文件不删除。若有其他来源覆盖，最终探测会报告功能缺失和来源，不会因探测不通过而恢复旧连接；重置按钮只改名当前 config.toml，随后重新配置。
 
 ## 开发与验证
 
@@ -44,4 +44,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.18 构建、附件与发布验证见 releases/v3.3.18/RELEASE-MANIFEST.md。
+v3.3.19 构建、附件与发布验证见 releases/v3.3.19/RELEASE-MANIFEST.md。

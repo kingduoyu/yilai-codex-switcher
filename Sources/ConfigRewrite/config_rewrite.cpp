@@ -322,6 +322,18 @@ void self_test() {
         catalogRoot["profiles"]["other"]["model_catalog_json"] == "keep.json" &&
         catalogRoot["model"] == "gpt-5.6-sol", "Catalog path/profile/default model mismatch.");
 
+  for (const char *input : {"model='gpt-6.1-sol'\n",
+                            "profile='work'\n[profiles.work]\nmodel='gpt-6.1-sol'\n"}) {
+    char *failure = nullptr;
+    char *result = yilai_configure_catalog(input, catalogPath, &failure);
+    check(result != nullptr && failure == nullptr, "Sol 6.1 catalog configuration failed.");
+    auto configured = toml::parse(result);
+    yilai_config_free(result);
+    auto *profile = active_profile(configured);
+    check((profile ? (*profile)["model"] : configured["model"]) == "gpt-6.1-sol",
+          "Catalog configuration replaced Sol 6.1.");
+  }
+
   const char *ccs = R"toml(
 profile = "work"
 model_provider = "custom"
@@ -876,7 +888,7 @@ extern "C" char *yilai_configure_catalog(const char *configured, const char *pat
     auto *profile = active_profile(root);
     auto &modelScope = profile && profile->contains("model") ? *profile : root;
     const auto model = modelScope["model"].value_or(std::string());
-    if (model != "gpt-5.6-sol" && model != "gpt-6-sol" &&
+    if (model != "gpt-5.6-sol" && model != "gpt-6-sol" && model != "gpt-6.1-sol" &&
         model != "gpt-5.6-terra" && model != "gpt-6-astra") {
       modelScope.insert_or_assign("model", "gpt-5.6-sol");
     }

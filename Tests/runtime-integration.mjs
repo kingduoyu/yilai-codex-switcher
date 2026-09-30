@@ -32,7 +32,7 @@ const mock = http.createServer(async (req,res) => {
 await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));
 const port=mock.address().port;
 const templateText=await readFile(templatePath,'utf8');
-const catalog={models:['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'].map(slug=>({...JSON.parse(templateText),slug,display_name:slug}))};
+const catalog={models:['gpt-5.6-sol','gpt-6-sol','gpt-6.1-sol','gpt-5.6-terra','gpt-6-astra'].map(slug=>({...JSON.parse(templateText),slug,display_name:slug}))};
 const catalogPath=path.join(home,'cc-switch-model-catalog.json');
 await writeFile(catalogPath,JSON.stringify(catalog,null,2));
 const config="model='gpt-6-astra'\nmodel_provider='custom'\nmodel_catalog_json="+JSON.stringify(catalogPath.replaceAll('\\','/'))+"\ncli_auth_credentials_store='file'\napproval_policy='never'\nsandbox_mode='read-only'\n[analytics]\nenabled=false\n[model_providers.custom]\nname='CCS synthetic'\nbase_url='http://127.0.0.1:"+port+"/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='sk-synthetic-local-only'\n[model_providers.custom.http_headers]\nX-Keep='unchanged'\n";
@@ -68,8 +68,8 @@ try{
  server=await new Server().init();
  const models=await server.request('model/list',{includeHidden:false,limit:100});
  facts.models=models.data.map(m=>m.model??m.id);
- assert.deepEqual([...facts.models].sort(),['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'].sort());
- for(const id of ['gpt-5.6-sol','gpt-6-sol','gpt-5.6-terra','gpt-6-astra'])assert(facts.models.includes(id));
+ assert.deepEqual([...facts.models].sort(),['gpt-5.6-sol','gpt-6-sol','gpt-6.1-sol','gpt-5.6-terra','gpt-6-astra'].sort());
+ for(const id of ['gpt-5.6-sol','gpt-6-sol','gpt-6.1-sol','gpt-5.6-terra','gpt-6-astra'])assert(facts.models.includes(id));
  const effective=(await server.request('config/read',{includeLayers:false})).config;
  assert.equal(effective.model,'gpt-6-astra');assert.equal(effective.features.image_generation,true);
  assert.equal(effective.model_catalog_json.replaceAll('\\','/'),path.join(home,'yilai-model-catalog.json').replaceAll('\\','/'));
@@ -124,7 +124,7 @@ db.execute('update threads set model_provider=? where id=?',('yilai',tid));db.co
  await writeFile(path.join(home,'config.toml'),'invalid=[TOML');
  const rejected=spawnSync(driver,['configure',home],{encoding:'utf8',windowsHide:true});assert.notEqual(rejected.status,0);assert.equal(await readFile(path.join(home,'auth.json'),'utf8'),retainedAuth);
   await assert.rejects(access(path.join(home,'yilai-switcher-logs')));
-  facts.passed=['API-only configuration and idempotence','managed three-model catalog installed; external catalog bytes retained','legacy history preserved during official switching','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','operations create no process logs'];
+  facts.passed=['API-only configuration and idempotence','managed five-model catalog installed; external catalog bytes retained','legacy history preserved during official switching','API bearer authentication without official login','native image tool and image header','real mock response via configured API','local configuration leaves existing/malformed history untouched','reset only disables configuration and preserves auth/history','invalid config fails without auth changes','operations create no process logs'];
  facts.status='passed';await writeFile(path.join(root,'result.json'),JSON.stringify(facts,null,2));console.log(JSON.stringify(facts,null,2));
 }catch(error){await writeFile(path.join(root,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,stderr:server?.stderr},null,2));throw error;}
 finally{if(server)await server.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));}
