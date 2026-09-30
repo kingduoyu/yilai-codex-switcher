@@ -162,27 +162,27 @@ struct Content: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 12) {
-                    Menu {
-                        Button { model.checkUpdates() } label: { Label("检查更新", systemImage: "arrow.clockwise") }
-                            .disabled(model.checkingUpdate)
-                        Button { model.showReleaseNotes = true } label: { Label("更新说明", systemImage: "text.alignleft") }
-                            .disabled(model.release == nil)
-                        Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
-                            .disabled(model.release?.available != true)
-                        Divider()
-                        Text(model.updateMessage)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Circle().fill(model.release?.available == true ? Color.yellow : Color.clear).frame(width: 6, height: 6)
+                    HStack(spacing: 6) {
+                        Circle().fill(model.release?.available == true ? Color.yellow : Color.clear).frame(width: 6, height: 6)
+                        Menu {
+                            Button { model.checkUpdates() } label: { Label("检查更新", systemImage: "arrow.clockwise") }
+                                .disabled(model.checkingUpdate)
+                            Button { model.showReleaseNotes = true } label: { Label("更新说明", systemImage: "text.alignleft") }
+                                .disabled(model.release == nil)
+                            Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
+                                .disabled(model.release?.available != true)
+                            Divider()
+                            Text(model.updateMessage)
+                        } label: {
                             Text(model.versionBadge)
                                 .font(.system(size: 12, weight: .medium))
                                 .lineLimit(1)
                         }
+                        .menuStyle(.borderlessButton)
+                        .help(model.updateMessage)
+                        .accessibilityLabel("软件版本与更新")
                     }
-                    .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help(model.updateMessage)
-                    .accessibilityLabel("软件版本与更新")
                     HStack(spacing: 7) {
                         Circle().fill(Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)).frame(width: 6, height: 6)
                         Text(model.mode).font(.system(size: 12, weight: .medium)).lineLimit(1)
@@ -351,6 +351,19 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
                 guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
+                if CommandLine.arguments.contains("--update-state") {
+                    var yellowPixels = 0
+                    for y in 0..<bitmap.pixelsHigh {
+                        for x in 0..<bitmap.pixelsWide {
+                            if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                               color.alphaComponent > 0.8, color.redComponent > 0.75,
+                               color.greenComponent > 0.55, color.blueComponent < 0.4 {
+                                yellowPixels += 1
+                            }
+                        }
+                    }
+                    guard yellowPixels >= 4 else { fputs("Update badge yellow dot was not rendered\n", stderr); exit(1) }
+                }
                 do { guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }; try png.write(to: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) } catch { exit(1) }
             }
         } else {
