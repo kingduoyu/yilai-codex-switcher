@@ -3,7 +3,7 @@
 #include <string>
 #include <functional>
 namespace app {
-enum class Action { Configure, Official, Cleanup, RepairHistory };
+enum class Action { Configure, Official, Cleanup, RepairHistory, UpdateModels };
 struct RunResult {
   std::wstring message;
   bool warning = false;
@@ -15,4 +15,6 @@ RunResult run(Action action, const std::filesystem::path &home,
               const std::filesystem::path &runtimeOverride = {},
               std::function<void(const std::wstring &)> progress = {});
 bool selfTest(std::wstring &error);
+RunResult installModelCatalog(const std::filesystem::path &home,
+                              const std::string &data, bool requireClosed = true);
 } // namespace app

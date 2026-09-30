@@ -14,6 +14,12 @@ char *yilai_clear_connection_overrides(const char *text, char **error);
 /* Static catalog bytes; do not free. */
 const char *yilai_model_catalog(void);
 char *yilai_configure_catalog(const char *configured, const char *path, char **error);
+char *yilai_configure_catalog_data(const char *configured, const char *path,
+                                   const char *catalog, char **error);
+/* Validated JSON results are malloc-owned, like configuration rewrites. */
+char *yilai_validate_catalog(const char *catalog, char **error);
+char *yilai_update_release(const char *json, const char *asset, char **error);
+char *yilai_update_channel(const char *json, char **error);
 void yilai_config_free(char *value);
 int yilai_config_mode(const char *text);
 int yilai_config_self_test(char **error);

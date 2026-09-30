@@ -2,6 +2,9 @@
 #include "../Sources/ConfigSources/runtime_probe.h"
 #include <iostream>
 #include "ConfigRewrite.h"
+#include "../Windows/Updates.h"
+#include "../Sources/Shared/update_protocol.hpp"
+#include <fstream>
 #include <windows.h>
 std::string utf8(const std::wstring &value) {
   if (value.empty()) return {};
@@ -23,6 +26,15 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   try {
     std::wstring name(argv[1]);
+    if (name == L"models") {
+      if (argc != 4) return 2;
+      std::ifstream input(std::filesystem::path(argv[3]), std::ios::binary);
+      if (!input) return 2;
+      std::string data((std::istreambuf_iterator<char>(input)), {});
+      auto result = app::installModelCatalog(std::filesystem::absolute(argv[2]), data, false);
+      std::cout << utf8(result.message) << '\n';
+      return 0;
+    }
     if (name != L"configure" && name != L"cleanup" && name != L"official") return 2;
     auto action = name == L"configure" ? app::Action::Configure : name == L"official" ? app::Action::Official : app::Action::Cleanup;
     const auto result = app::run(action, std::filesystem::absolute(argv[2]),

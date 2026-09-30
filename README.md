@@ -1,10 +1,14 @@
-# 易来 Codex 配置器 v3.3.19
+# 易来 Codex 配置器 v3.4.0
 
 Windows / macOS 原生小工具：填写 API Key，一键配置易来 API 并启用生图。支持 API 与官方双向切换；常规切换不处理历史对话归属。
 
 稳定下载地址：[Windows EXE](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher.exe) · [macOS DMG](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest/download/YilaiCodexSwitcher-macOS-universal.dmg)。也可以打开 [GitHub Releases](https://github.com/kingduoyu/yilai-codex-switcher/releases/latest) 页面下载。
 
 ## 使用
+
+启动后后台检查软件新版；有新版时点击 **一键更新**，下载并校验后退出配置器，辅助程序保留旧版、替换并重新打开。失败时显示结果并保留或恢复旧版。可用 **检查更新** 重试，**更新说明** 查看新版说明。macOS 应先把应用复制到可写的 Applications 目录，不能直接在只读 DMG 内更新。
+
+点击 **更新模型** 可独立同步新模型，无需下载新版软件或填写 Key。操作前退出 Codex 和 CC-Switch，更新后重开 Codex。只更新 `CODEX_HOME/yilai-model-catalog.json`，当前模型、账号、登录和历史不变；官方模式下该目录不生效。已更新的目录会在下一次配置易来 API 时继续使用。
 
 1. 完全退出 Codex 和 CC-Switch，包括后台进程。
 2. 填写 API Key，点击 **配置易来 API · 启用生图**，完成后重新打开 Codex。
@@ -32,7 +36,13 @@ API 和官方切换不扫描、迁移、恢复或检查历史对话归属，不�
 
 先在 CCS 选择 API 供应商，再退出 CCS 和 Codex，运行本配置器。不要在 CCS 仍选中官方时用外部工具改写连接：CCS 后续可能把磁盘配置回存到当前官方条目。本版不修改 CCS 数据库；若 CCS 使用的配置目录、项目配置、profile、启动参数或托管配置造成最终冲突，配置器会保留 API 配置并直接显示原因。
 
-每次配置都会写入内置 model-catalog.json 中固定的 gpt-5.6-sol、gpt-6-sol、gpt-6.1-sol、gpt-5.6-terra、gpt-6-astra，到 CODEX_HOME/yilai-model-catalog.json，并更新根配置和当前 profile 的指向；不联网获取模型。其他目录文件不删除。若有其他来源覆盖，最终探测会报告功能缺失和来源，不会因探测不通过而恢复旧连接；重置按钮只改名当前 config.toml，随后重新配置。
+首次配置写入内置五个模型；已有合法更新目录时继续使用该目录。配置按钮不依赖网络；独立“更新模型”从公开 `model-channel.json` 获取不可变提交的目录，核对 SHA-256、结构和已有模型，失败不覆盖原目录。配置更新根配置和当前 profile 的目录指向；其他目录文件不删除。若有其他来源覆盖，最终探测会报告来源，不会因探测不通过而恢复旧连接。
+
+## 维护更新
+
+新增模型：编辑 `model-catalog.json`，在 `main` 运行 `pwsh -File Tools/Publish-ModelCatalog.ps1` 校验，再以 `-Publish` 发布目录（支持 `-WhatIf`）。工具先提交并推送目录，再发布指向该不可变提交的频道及校验值，不打软件版本标签、不创建软件 Release。不得移除已有模型或带入其他未提交改动；发布中断时先核对已有提交及频道，不机械重发。软件版本中的内置目录仍独立保留，供离线首次配置使用。
+
+软件更新仍使用 GitHub stable latest Release。必须同时上传固定名称 `YilaiCodexSwitcher.exe`、`YilaiCodexSwitcher-macOS-universal.dmg` 和自动更新用的 `YilaiCodexSwitcher-macOS-universal.zip`；三者来自同一源码。更新器核对 GitHub 附件的 SHA-256、大小、固定仓库 URL 和实际程序版本，不安装预发布或旧版。Windows 更新辅助程序随 EXE 内嵌，macOS 辅助程序随应用生成；都保留回退副本，不触碰 Codex 数据。传输依赖 HTTPS 与 GitHub 发布权限，未增加独立代码签名服务。
 
 ## 开发与验证
 
@@ -48,4 +58,4 @@ Windows：pwsh -File Windows/build.ps1，运行 dist/windows/YilaiCodexSwitcher.
 
 macOS：PUBLISH_DIR="$PWD/dist" bash build-macos.sh；公开工作流构建 Intel + Apple Silicon 通用版本，执行自测、DMG 校验和截图。macOS 13+，ad-hoc 签名，未公证。
 
-v3.3.19 构建、附件与发布验证见 releases/v3.3.19/RELEASE-MANIFEST.md。
+最近已发布版本 v3.3.19 的证据见 releases/v3.3.19/RELEASE-MANIFEST.md；v3.4.0 为当前开发版本。

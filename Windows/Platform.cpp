@@ -1,6 +1,8 @@
 #include <windows.h>
 
 #include "Platform.h"
+#include "Updates.h"
+#include "../Sources/Shared/update_protocol.hpp"
 #include "ConfigRewrite.h"
 #include "HistoryRepair.h"
 #include "Diagnostics.h"
@@ -219,6 +221,36 @@ std::wstring mode(const fs::path &root) {
     return L"配置需要检查";
   }
 }
+static RunResult writeModelCatalog(const fs::path &root, const std::string &data) {
+  const auto path = root / L"yilai-model-catalog.json";
+  regular(path);
+  const bool existed = fs::exists(path);
+  const auto before = existed ? read(path) : std::string();
+  const auto incoming = updates::catalog(data);
+  updates::additive(updates::catalog(yilai_model_catalog()), incoming);
+  if (existed) updates::additive(updates::catalog(before), incoming);
+  const auto config = root / L"config.toml";
+  regular(config);
+  const auto configBefore = fs::exists(config) ? read(config) : std::string();
+  if (before == data) return {L"模型目录已是最新。", false};
+  ensure(fs::exists(path) == existed && (existed ? read(path) : "") == before,
+         "模型目录已被其他程序改动，请重试。");
+  ensure((fs::exists(config) ? read(config) : "") == configBefore,
+         "配置已被其他程序改动，请重试。");
+  atomic(path, data);
+  const bool api = yilai_config_mode(configBefore.c_str()) == 1;
+  return {L"已更新 " + std::to_wstring(incoming["models"].size()) +
+          L" 个模型。" + (api ? L"请重新打开 Codex。" : L"配置易来 API 后生效。"), false};
+}
+RunResult installModelCatalog(const fs::path &root, const std::string &data, bool closed) {
+  char *error = nullptr;
+  std::unique_ptr<YilaiOperationLock, decltype(&yilai_operation_unlock)> lock(
+      yilai_operation_lock(utf8(root.wstring()).c_str(), &error), yilai_operation_unlock);
+  Buffer detail(error, yilai_config_free);
+  ensure(lock != nullptr, detail ? detail.get() : "无法取得操作锁");
+  if (closed) requireAppsClosed();
+  return writeModelCatalog(root, data);
+}
 static RunResult perform(Action action, const fs::path &root,
                          const std::wstring &input, bool closed,
                          OperationLog &log,
@@ -233,6 +265,10 @@ static RunResult perform(Action action, const fs::path &root,
   if (closed)
     requireAppsClosed();
   const auto config = root / L"config.toml";
+  if (action == Action::UpdateModels) {
+    log.step("download_catalog", "下载并校验模型目录");
+    return writeModelCatalog(root, downloadModels().data);
+  }
   if (action == Action::RepairHistory) {
     log.step("repair_history", "修复旧易来对话");
     char *error = nullptr;
@@ -300,9 +336,16 @@ static RunResult perform(Action action, const fs::path &root,
   regular(catalogPath);
   const bool hadCatalog = fs::exists(catalogPath);
   const auto catalogBefore = hadCatalog ? read(catalogPath) : "";
-  const std::string catalogAfter(yilai_model_catalog());
+  std::string catalogAfter(yilai_model_catalog());
+  if (hadCatalog) {
+    try {
+      const auto cached = updates::catalog(catalogBefore);
+      updates::additive(updates::catalog(catalogAfter), cached);
+      catalogAfter = catalogBefore;
+    } catch (...) { /* Invalid old catalogs fall back to the bundled catalog. */ }
+  }
   char *catalogError = nullptr;
-  Buffer withCatalog(yilai_configure_catalog(result.get(), utf8(catalogPath.wstring()).c_str(), &catalogError), yilai_config_free);
+  Buffer withCatalog(yilai_configure_catalog_data(result.get(), utf8(catalogPath.wstring()).c_str(), catalogAfter.c_str(), &catalogError), yilai_config_free);
   Buffer catalogDetail(catalogError, yilai_config_free);
   ensure(withCatalog != nullptr, catalogDetail ? catalogDetail.get() : "模型目录配置失败");
   const std::string after(withCatalog.get());
@@ -314,7 +357,7 @@ static RunResult perform(Action action, const fs::path &root,
   const auto authBefore = hadAuth ? read(authPath) : "";
   bool wroteConfig = false, removedAuth = false, wroteCatalog = false;
   try {
-    log.step("write_catalog", "写入三个指定模型");
+    log.step("write_catalog", "写入模型目录");
     ensure(fs::exists(catalogPath) == hadCatalog && (hadCatalog ? read(catalogPath) : "") == catalogBefore, "模型目录已被其他程序改动");
     atomic(catalogPath, catalogAfter);
     wroteCatalog = true;
@@ -416,7 +459,7 @@ static RunResult perform(Action action, const fs::path &root,
 RunResult run(Action action, const fs::path &root, const std::wstring &input,
               bool closed, const fs::path &runtimeOverride,
               std::function<void(const std::wstring &)> progress) {
-  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::RepairHistory ? "repair_history" : "reset_config";
+  const char *name = action == Action::Configure ? "configure_api" : action == Action::Official ? "official" : action == Action::RepairHistory ? "repair_history" : action == Action::UpdateModels ? "update_models" : "reset_config";
   OperationLog log{yilai_diagnostic_begin(utf8(root.wstring()).c_str(), name,
                                           utf8(input).c_str())};
   log.progress = std::move(progress);
@@ -439,6 +482,7 @@ RunResult run(Action action, const fs::path &root, const std::wstring &input,
 }
 bool selfTest(std::wstring &error) {
   try {
+    ensure(updateSelfTest(error), "Update self-test failed");
     for (auto test : {yilai_config_self_test, yilai_history_repair_self_test,
                       yilai_diagnostic_self_test}) {
       char *detail = nullptr;

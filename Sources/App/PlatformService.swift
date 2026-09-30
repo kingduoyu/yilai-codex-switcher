@@ -102,6 +102,22 @@ final class PlatformService {
         }
     }
 
+    func modelCatalog() -> [CatalogModel] {
+        let url = root.appendingPathComponent("yilai-model-catalog.json")
+        if let catalog = try? installedCatalog(url) { return catalog.models }
+        return (try? UpdateProtocol.builtinCatalog().models) ?? []
+    }
+
+    private func installedCatalog(_ url: URL) throws -> ValidatedCatalog {
+        try regular(url)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: UpdateProtocol.catalogLimit + 1) ?? Data()
+        let catalog = try UpdateProtocol.catalog(data)
+        try catalog.requireIncluding(UpdateProtocol.builtinCatalog().ids)
+        return catalog
+    }
+
     private func closed() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -176,6 +192,37 @@ final class PlatformService {
     private func restore(_ data: Data?, _ url: URL) throws {
         if let data { try write(data, url) }
         else if files.fileExists(atPath: url.path) { try regular(url); try files.removeItem(at: url) }
+    }
+
+    func updateCatalog(_ data: Data, sha256: String, requireClosed: Bool = true) throws -> OperationOutcome {
+        var lockError: UnsafeMutablePointer<CChar>?
+        let lock = root.path.withCString { yilai_operation_lock($0, &lockError) }
+        defer { if let lockError { yilai_config_free(lockError) } }
+        guard let lock else {
+            throw AppError(message: lockError.map { String(cString: $0) } ?? "另一个配置器正在操作此目录，请稍后重试。")
+        }
+        defer { yilai_operation_unlock(lock) }
+        if requireClosed { try closed() }
+        try UpdateProtocol.verifyDigest(data, expected: sha256)
+        let updated = try UpdateProtocol.catalog(data)
+        let builtin = try UpdateProtocol.builtinCatalog()
+        try updated.requireIncluding(builtin.ids)
+        let catalogURL = root.appendingPathComponent("yilai-model-catalog.json")
+        let before = try snapshot(catalogURL)
+        if let before {
+            // A corrupt catalog needs explicit configuration repair; it cannot
+            // be used to prove that an independent update is additive.
+            let existing = try UpdateProtocol.catalog(before)
+            try updated.requireIncluding(existing.ids)
+        }
+        if requireClosed { try closed() }
+        guard try snapshot(catalogURL) == before else {
+            throw AppError(message: "模型目录已被其他程序改动，请关闭后重试。")
+        }
+        if before != data { try write(data, catalogURL) }
+        return OperationOutcome(
+            message: "模型目录已更新（\(updated.ids.count) 个模型）。当前连接保持不变；官方连接下目录暂不启用。",
+            warning: false)
     }
 
     // link(2) publishes a complete private file only if the destination is absent.
@@ -321,14 +368,24 @@ final class PlatformService {
         }
         let catalogURL = root.appendingPathComponent("yilai-model-catalog.json")
         let beforeCatalog = try snapshot(catalogURL)
-        let catalogData = Data(String(cString: yilai_model_catalog()).utf8)
+        let builtinCatalog = try UpdateProtocol.builtinCatalog()
+        let existingCatalog = beforeCatalog.flatMap { try? UpdateProtocol.catalog($0) }
+        let catalogData = existingCatalog.flatMap {
+            builtinCatalog.ids.isSubset(of: $0.ids) ? $0.data : nil
+        } ?? builtinCatalog.data
         var catalogError: UnsafeMutablePointer<CChar>?
-        let withCatalog = catalogURL.path.withCString { yilai_configure_catalog(output, $0, &catalogError) }
+        let withCatalog = catalogURL.path.withCString { path in
+            String(decoding: catalogData, as: UTF8.self).withCString {
+                yilai_configure_catalog_data(output, path, $0, &catalogError)
+            }
+        }
         defer {
             if let withCatalog { yilai_config_free(withCatalog) }
             if let catalogError { yilai_config_free(catalogError) }
         }
-        guard let withCatalog else { throw AppError(message: "模型目录配置失败") }
+        guard let withCatalog else {
+            throw AppError(message: catalogError.map { String(cString: $0) } ?? "模型目录配置失败")
+        }
         let after = Data(String(cString: withCatalog).utf8)
         let beforeAuth = try snapshot(auth)
         guard try snapshot(config) == beforeConfig else {
@@ -338,7 +395,7 @@ final class PlatformService {
         var configChanged = false
         var authRemoved = false
         do {
-            log.event("write_catalog", "Writing the three managed models")
+            log.event("write_catalog", "Preserving or installing the validated managed catalog")
             guard try snapshot(catalogURL) == beforeCatalog else { throw AppError(message: "模型目录已被其他程序改动") }
             try write(catalogData, catalogURL)
             catalogChanged = true
@@ -435,6 +492,7 @@ final class PlatformService {
 }
 
 func selfTest() throws {
+    try updateSelfTest()
     for test in [yilai_config_self_test, yilai_diagnostic_self_test, yilai_history_repair_self_test] {
         var error: UnsafeMutablePointer<CChar>?
         let ok = test(&error)

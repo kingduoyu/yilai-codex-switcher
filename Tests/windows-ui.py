@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
     home = Path(fixture)
     original = "[broken"
     (home / "config.toml").write_text(original, encoding="utf8")
-    environment = dict(os.environ, CODEX_HOME=str(home), CODEX_SQLITE_HOME=str(home))
+    environment = dict(os.environ, CODEX_HOME=str(home), CODEX_SQLITE_HOME=str(home), YILAI_SKIP_UPDATE_CHECK="1")
     startup = subprocess.STARTUPINFO()
     startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = 0
@@ -51,6 +51,16 @@ with tempfile.TemporaryDirectory(prefix="yilai-ui-regression-") as fixture:
         assert not u.GetDlgItem(window, 1005), "Process log button remains"
         assert u.GetDlgItem(window, 1002), "Official button missing"
         assert u.GetDlgItem(window, 1006), "Standalone history repair button missing"
+        models = u.GetDlgItem(window, 1010)
+        updater = u.GetDlgItem(window, 1007)
+        assert models and updater and u.GetDlgItem(window, 1008), "Update controls missing"
+        assert u.SendMessageW(models, 0x0146, 0, 0) >= 6, "Model dropdown is empty"
+        model_rect, api_rect, update_rect = w.RECT(), w.RECT(), w.RECT()
+        u.GetWindowRect(models, c.byref(model_rect))
+        u.GetWindowRect(api, c.byref(api_rect))
+        u.GetWindowRect(updater, c.byref(update_rect))
+        assert model_rect.bottom <= api_rect.top, "Model list overlaps API button"
+        assert update_rect.bottom < model_rect.top, "Software update is not in header"
         u.FindWindowExW.argtypes = [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR]
         u.FindWindowExW.restype = w.HWND
         edit = u.FindWindowExW(window, None, "Edit", None)

@@ -1,6 +1,7 @@
 #include "ConfigRewrite.h"
 #include "model_catalog_data.hpp"
 #include "vendor/toml.hpp"
+#include "../Shared/update_protocol.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -877,9 +878,14 @@ extern "C" char *yilai_clear_connection_overrides(const char *text, char **error
 }
 extern "C" const char *yilai_model_catalog(void) { return kModelCatalog; }
 extern "C" char *yilai_configure_catalog(const char *configured, const char *path, char **error) {
+  return yilai_configure_catalog_data(configured, path, kModelCatalog, error);
+}
+extern "C" char *yilai_configure_catalog_data(const char *configured, const char *path,
+                                              const char *catalog, char **error) {
   if (error) *error = nullptr;
   try {
-    if (!configured || !path || !*path) throw std::runtime_error("Missing catalog input.");
+    if (!configured || !path || !*path || !catalog) throw std::runtime_error("Missing catalog input.");
+    const auto models = updates::catalog(catalog);
     auto root = toml::parse(configured);
     // Set the same owned directory for root and the selected profile only.
     for (auto *scope : {&root, active_profile(root)}) if (scope) {
@@ -888,8 +894,9 @@ extern "C" char *yilai_configure_catalog(const char *configured, const char *pat
     auto *profile = active_profile(root);
     auto &modelScope = profile && profile->contains("model") ? *profile : root;
     const auto model = modelScope["model"].value_or(std::string());
-    if (model != "gpt-5.6-sol" && model != "gpt-6-sol" && model != "gpt-6.1-sol" &&
-        model != "gpt-5.6-terra" && model != "gpt-6-astra") {
+    bool supported = false;
+    for (const auto &entry : models["models"]) if (entry["slug"] == model) supported = true;
+    if (!supported) {
       modelScope.insert_or_assign("model", "gpt-5.6-sol");
     }
     auto *result = copy_string(format(root));
@@ -899,6 +906,28 @@ extern "C" char *yilai_configure_catalog(const char *configured, const char *pat
     if (error) *error = copy_string("Unable to configure the model catalog.");
     return nullptr;
   }
+}
+namespace {
+template <typename F> char *update_json(char **error, F operation) {
+  if (error) *error = nullptr;
+  try {
+    auto *result = copy_string(operation().dump());
+    if (!result) throw std::runtime_error("Out of memory.");
+    return result;
+  } catch (const std::exception &failure) {
+    if (error) *error = copy_string(failure.what());
+    return nullptr;
+  }
+}
+}
+extern "C" char *yilai_validate_catalog(const char *catalog, char **error) {
+  return update_json(error, [&] { return updates::catalog(catalog ? catalog : ""); });
+}
+extern "C" char *yilai_update_release(const char *json, const char *asset, char **error) {
+  return update_json(error, [&] { return updates::release(json ? json : "", asset ? asset : ""); });
+}
+extern "C" char *yilai_update_channel(const char *json, char **error) {
+  return update_json(error, [&] { return updates::channel(json ? json : ""); });
 }
 extern "C" void yilai_config_free(char *value) { std::free(value); }
 extern "C" int yilai_config_mode(const char *text) {

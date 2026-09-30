@@ -9,9 +9,101 @@ final class Controller: ObservableObject {
     @Published var warning = false
     @Published var message = "准备就绪。填写 API Key，一键启用易来 API 和生图。"
     @Published var mode = ""
+    @Published var models: [CatalogModel] = []
+    @Published var inspectedModelID = ""
+    @Published var checkingUpdate = false
+    @Published var release: SoftwareRelease?
+    @Published var updateMessage = "启动后检查更新"
+    @Published var showReleaseNotes = false
     let service = PlatformService()
+    private let updates = UpdateService()
 
-    init() { mode = service.mode() }
+    init() {
+        mode = service.mode()
+        refreshModels()
+        if let result = UpdateInstaller.consumeResult() {
+            message = result.message
+            warning = result.warning
+        }
+    }
+
+    var inspectedModel: CatalogModel? { models.first { $0.id == inspectedModelID } ?? models.first }
+    var versionBadge: String {
+        guard let release, release.available else { return "v\(UpdateProtocol.version)" }
+        return "有新版本 \(release.version)"
+    }
+
+    private func refreshModels() {
+        models = service.modelCatalog()
+        if !models.contains(where: { $0.id == inspectedModelID }) { inspectedModelID = models.first?.id ?? "" }
+    }
+
+    func checkUpdates(silent: Bool = false) {
+        guard !checkingUpdate, !busy else { return }
+        checkingUpdate = true
+        updateMessage = "正在检查软件更新…"
+        Task { @MainActor [self] in
+            defer { checkingUpdate = false }
+            do {
+                let result = try await updates.checkRelease()
+                release = result
+                updateMessage = result.available ? "有新版本 \(result.version)" : "当前已是最新版本 v\(UpdateProtocol.version)"
+                if !silent && !busy {
+                    message = updateMessage
+                    failed = false
+                    warning = false
+                }
+            } catch {
+                updateMessage = "软件更新检查失败：\(error.localizedDescription)"
+                if !silent && !busy {
+                    message = updateMessage
+                    failed = true
+                    warning = false
+                }
+            }
+        }
+    }
+
+    func updateModels() {
+        guard !busy else { return }
+        busy = true
+        failed = false
+        warning = false
+        message = "正在更新模型目录，请稍候…"
+        Task { @MainActor [self] in
+            defer { busy = false }
+            do {
+                let result = try await updates.updateCatalog(using: service)
+                refreshModels()
+                message = result.message
+                warning = result.warning
+            } catch {
+                failed = true
+                message = "模型更新失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func installUpdate() {
+        guard !busy, let release, release.available else { return }
+        busy = true
+        failed = false
+        warning = false
+        showReleaseNotes = false
+        message = "正在下载并校验软件更新；完成后将安装并重新启动…"
+        Task { @MainActor [self] in
+            do {
+                let installation = try await updates.prepareInstallation(release)
+                try await installation.launch()
+                busy = false
+                NSApplication.shared.terminate(nil)
+            } catch {
+                busy = false
+                failed = true
+                message = "软件更新失败：\(error.localizedDescription)"
+            }
+        }
+    }
 
     func execute(_ operation: Operation) {
         guard !busy else { return }
@@ -34,6 +126,7 @@ final class Controller: ObservableObject {
                     message = error.localizedDescription
                 }
                 mode = service.mode()
+                refreshModels()
             }
         }
     }
@@ -68,15 +161,34 @@ struct Content: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack(spacing: 7) {
-                    Circle().fill(Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)).frame(width: 6, height: 6)
-                    Text(model.mode).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                VStack(alignment: .trailing, spacing: 12) {
+                    Menu {
+                        Button { model.checkUpdates() } label: { Label("检查更新", systemImage: "arrow.clockwise") }
+                            .disabled(model.checkingUpdate)
+                        Button { model.showReleaseNotes = true } label: { Label("更新说明", systemImage: "text.alignleft") }
+                            .disabled(model.release == nil)
+                        Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
+                            .disabled(model.release?.available != true)
+                        Divider()
+                        Text(model.updateMessage)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle().fill(model.release?.available == true ? Color.yellow : Color.clear).frame(width: 6, height: 6)
+                            Text(model.versionBadge)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(model.updateMessage)
+                    .accessibilityLabel("软件版本与更新")
+                    HStack(spacing: 7) {
+                        Circle().fill(Color(red: 37 / 255, green: 99 / 255, blue: 235 / 255)).frame(width: 6, height: 6)
+                        Text(model.mode).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    }
+                    .accessibilityLabel("当前连接：\(model.mode)")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.white)
-                .clipShape(Capsule())
-                .accessibilityLabel("当前连接：\(model.mode)")
             }
 
             VStack(alignment: .leading, spacing: 20) {
@@ -107,6 +219,32 @@ struct Content: View {
                     .background(Color(red: 0.98, green: 0.985, blue: 0.993))
                     .clipShape(RoundedRectangle(cornerRadius: 9))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(red: 0.85, green: 0.88, blue: 0.92), lineWidth: 1))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("模型目录（\(model.models.count)）").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Menu {
+                            ForEach(model.models) { item in
+                                Button("\(item.displayName) · \(item.slug)") { model.inspectedModelID = item.id }
+                            }
+                        } label: {
+                            Text(model.inspectedModel?.displayName ?? "模型目录")
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .help("查看已安装的模型目录，不修改 Codex 模型选择。")
+                        .accessibilityLabel("查看模型目录")
+                        Button { model.updateModels() } label: {
+                            Label("更新模型", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .fixedSize()
+                    }
+                    .controlSize(.regular)
+                    .font(.system(size: 13))
+                    .frame(height: 30)
                 }
 
                 Button("配置易来 API · 启用生图") { model.execute(.configure) }
@@ -164,18 +302,46 @@ struct Content: View {
             }
         }
         .padding(28)
-        .frame(width: 760, height: 560)
+        .frame(minWidth: 720, maxWidth: .infinity, minHeight: 700, maxHeight: .infinity)
         .background(Color(red: 245 / 255, green: 247 / 255, blue: 251 / 255))
         .disabled(model.busy)
         .preferredColorScheme(.light)
+        .sheet(isPresented: $model.showReleaseNotes) {
+            if let release = model.release {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Text("更新说明 \(release.version)").font(.system(size: 18, weight: .semibold))
+                        Spacer()
+                        Button { model.showReleaseNotes = false } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain)
+                            .help("关闭更新说明")
+                    }
+                    ScrollView {
+                        Text(release.notes.isEmpty ? "此版本暂无更新说明。" : release.notes)
+                            .font(.system(size: 13))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack {
+                        Spacer()
+                        Button { model.installUpdate() } label: { Label("一键更新", systemImage: "arrow.down.circle") }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!release.available || model.busy)
+                    }
+                }
+                .padding(24)
+                .frame(width: 540, height: 420)
+            }
+        }
     }
 }
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let controller = Controller()
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "易来 Codex 配置器 v3.3.19"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.contentMinSize = NSSize(width: 720, height: 700)
+        window.title = "易来 Codex 配置器 v\(UpdateProtocol.version)"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
@@ -183,6 +349,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 do { guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }; try png.write(to: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) } catch { exit(1) }
             }
+        } else {
+            controller.checkUpdates(silent: true)
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -191,8 +359,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool { !controller.busy }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
+if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--update-helper" {
+    do { try UpdateInstaller.runHelper(Array(CommandLine.arguments.dropFirst(2))); exit(0) }
+    catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+}
 if CommandLine.arguments.contains("--self-test") {
-    do { try selfTest(); print("PASS: API configuration, macOS reset/rollback, and unrelated data preservation"); exit(0) }
+    do { try selfTest(); print("PASS: API configuration, macOS reset/rollback, update protocol/catalog, and unrelated data preservation"); exit(0) }
     catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 }
 let application = NSApplication.shared
