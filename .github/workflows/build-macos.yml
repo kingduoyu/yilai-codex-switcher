@@ -18,12 +18,19 @@ jobs:
           PUBLISH_DIR: ${{ github.workspace }}/dist
         run: bash build-macos.sh
 
+      - name: Verify native update and rollback
+        shell: bash
+        run: >-
+          python3 Tests/macos-update.py "$PWD/dist/易来 Codex 切换器.app"
+          2>&1 | tee dist/macos-update-result.log
+
       - name: Render macOS UI proof
         run: >-
           "dist/易来 Codex 切换器.app/Contents/MacOS/YilaiCodexSwitcherMac"
-          --screenshot "dist/implementation-macos.png"
+          --screenshot "dist/implementation-macos.png" --update-state
 
       - name: Upload universal app
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: YilaiCodexSwitcher-macOS-universal
@@ -31,4 +38,7 @@ jobs:
             dist/YilaiCodexSwitcher-v*-macOS-universal.dmg
             dist/YilaiCodexSwitcher-v*-macOS-universal.zip
             dist/implementation-macos.png
+            dist/macos-update-result.log
+            dist/macos-update-result.json
+            dist/macos-update-*/**/helper.log
           if-no-files-found: error

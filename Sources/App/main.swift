@@ -344,6 +344,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.title = "易来 Codex 配置器 v\(UpdateProtocol.version)"; window.delegate = self; window.contentView = NSHostingView(rootView: Content(model: controller)); window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         if let index = CommandLine.arguments.firstIndex(of: "--screenshot"), CommandLine.arguments.count > index + 1 {
+            if CommandLine.arguments.contains("--update-state") {
+                controller.release = SoftwareRelease(available: true, version: "v3.4.1", notes: "", url: nil, sha256: nil, size: nil)
+                controller.updateMessage = "有新版本 v3.4.1"
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
                 guard let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
