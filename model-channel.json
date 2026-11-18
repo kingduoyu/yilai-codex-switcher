@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 2,
-  "sha256": "87c4be2262e8b1509797714a7b69d984f3cf7917847a2e2c00e5ed71e05e440d",
-  "url": "https://raw.githubusercontent.com/kingduoyu/yilai-codex-switcher/8cdc37b52c77525d3dd703feed94812689867e95/model-catalog.json"
+  "revision": 3,
+  "sha256": "beadb5ae84306b9fb2416e4d7eb3d6e43d445b269de81e6670e36d419e8318c9",
+  "url": "https://raw.githubusercontent.com/kingduoyu/yilai-codex-switcher/8ec36ecbe06167e941e923f64c142ca541f589da/model-catalog.json"
 }
